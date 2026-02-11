@@ -1,0 +1,1057 @@
+// React Native Version - Replace the web version with this for mobile app
+// Save as: App.js in your React Native project
+
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  ScrollView,
+  StyleSheet,
+  Alert,
+  RefreshControl,
+  ActivityIndicator
+} from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// CHANGE THIS TO YOUR DEPLOYED SERVER URL
+const API_URL = 'https://your-server.railway.app/api';
+
+export default function App() {
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [user, setUser] = useState(null);
+  const [token, setToken] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    checkAuth();
+  }, []);
+
+  const checkAuth = async () => {
+    try {
+      const storedToken = await AsyncStorage.getItem('token');
+      const storedUser = await AsyncStorage.getItem('user');
+      
+      if (storedToken && storedUser) {
+        setToken(storedToken);
+        setUser(JSON.parse(storedUser));
+        setIsLoggedIn(true);
+      }
+    } catch (error) {
+      console.error('Auth check error:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <View style={styles.centerContainer}>
+        <ActivityIndicator size="large" color="#9333ea" />
+      </View>
+    );
+  }
+
+  if (!isLoggedIn) {
+    return <LoginScreen setToken={setToken} setUser={setUser} setIsLoggedIn={setIsLoggedIn} />;
+  }
+
+  if (user?.role === 'admin') {
+    return <AdminDashboard token={token} user={user} setIsLoggedIn={setIsLoggedIn} setUser={setUser} />;
+  }
+
+  return <StudentDashboard token={token} user={user} setIsLoggedIn={setIsLoggedIn} setUser={setUser} />;
+}
+
+// LOGIN SCREEN
+function LoginScreen({ setToken, setUser, setIsLoggedIn }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleLogin = async () => {
+    if (!username || !password) {
+      Alert.alert('Error', 'Please enter username and password');
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      const response = await fetch(`${API_URL}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Login failed');
+      }
+
+      await AsyncStorage.setItem('token', data.token);
+      await AsyncStorage.setItem('user', JSON.stringify(data.user));
+
+      setToken(data.token);
+      setUser(data.user);
+      setIsLoggedIn(true);
+    } catch (error) {
+      Alert.alert('Login Failed', error.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <ScrollView style={styles.container} contentContainerStyle={styles.loginContainer}>
+      <View style={styles.logoContainer}>
+        <Text style={styles.logoText}>💰</Text>
+        <Text style={styles.title}>HOSTEL FUND</Text>
+        <Text style={styles.subtitle}>Management System</Text>
+      </View>
+
+      <View style={styles.formContainer}>
+        <Text style={styles.label}>USERNAME</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="Enter username"
+          placeholderTextColor="#999"
+          value={username}
+          onChangeText={setUsername}
+          autoCapitalize="none"
+        />
+
+        <Text style={styles.label}>PASSWORD</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="Enter password"
+          placeholderTextColor="#999"
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry
+          autoCapitalize="none"
+        />
+
+        <TouchableOpacity
+          style={[styles.button, styles.primaryButton]}
+          onPress={handleLogin}
+          disabled={isLoading}
+        >
+          <Text style={styles.buttonText}>
+            {isLoading ? 'LOGGING IN...' : 'LOGIN'}
+          </Text>
+        </TouchableOpacity>
+
+        <View style={styles.infoBox}>
+          <Text style={styles.infoText}>Default Admin:</Text>
+          <Text style={styles.infoText}>Username: admin</Text>
+          <Text style={styles.infoText}>Password: admin123</Text>
+        </View>
+      </View>
+    </ScrollView>
+  );
+}
+
+// ADMIN DASHBOARD
+function AdminDashboard({ token, user, setIsLoggedIn, setUser }) {
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [stats, setStats] = useState(null);
+  const [students, setStudents] = useState([]);
+  const [jobs, setJobs] = useState([]);
+  const [refreshing, setRefreshing] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Modals
+  const [showJobModal, setShowJobModal] = useState(false);
+  const [showStudentModal, setShowStudentModal] = useState(false);
+  const [jobForm, setJobForm] = useState({ name: '', amount: '', date: '' });
+  const [studentForm, setStudentForm] = useState({ username: '', password: '', full_name: '' });
+
+  useEffect(() => {
+    loadData();
+  }, [activeTab]);
+
+  const loadData = async () => {
+    if (activeTab === 'dashboard') await loadDashboard();
+    if (activeTab === 'students') await loadStudents();
+    if (activeTab === 'jobs') await loadJobs();
+  };
+
+  const apiCall = async (endpoint, options = {}) => {
+    const response = await fetch(`${API_URL}${endpoint}`, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        ...options.headers
+      }
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Request failed');
+    return data;
+  };
+
+  const loadDashboard = async () => {
+    setIsLoading(true);
+    try {
+      const data = await apiCall('/admin/dashboard');
+      setStats(data);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to load dashboard');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const loadStudents = async () => {
+    setIsLoading(true);
+    try {
+      const data = await apiCall('/admin/students');
+      setStudents(data);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to load students');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const loadJobs = async () => {
+    setIsLoading(true);
+    try {
+      const data = await apiCall('/admin/jobs');
+      setJobs(data);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to load jobs');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await AsyncStorage.removeItem('token');
+    await AsyncStorage.removeItem('user');
+    setIsLoggedIn(false);
+    setUser(null);
+  };
+
+  const addJob = async () => {
+    if (!jobForm.name || !jobForm.amount || !jobForm.date) {
+      Alert.alert('Error', 'Please fill all fields');
+      return;
+    }
+
+    try {
+      await apiCall('/admin/jobs', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: jobForm.name,
+          amount: parseFloat(jobForm.amount),
+          date: jobForm.date
+        })
+      });
+
+      Alert.alert('Success', 'Job added successfully');
+      setJobForm({ name: '', amount: '', date: '' });
+      setShowJobModal(false);
+      loadData();
+    } catch (error) {
+      Alert.alert('Error', error.message);
+    }
+  };
+
+  const addStudent = async () => {
+    if (!studentForm.username || !studentForm.password || !studentForm.full_name) {
+      Alert.alert('Error', 'Please fill all fields');
+      return;
+    }
+
+    try {
+      await apiCall('/admin/students', {
+        method: 'POST',
+        body: JSON.stringify(studentForm)
+      });
+
+      Alert.alert('Success', 'Student added successfully');
+      setStudentForm({ username: '', password: '', full_name: '' });
+      setShowStudentModal(false);
+      loadStudents();
+    } catch (error) {
+      Alert.alert('Error', error.message);
+    }
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadData();
+    setRefreshing(false);
+  };
+
+  return (
+    <View style={styles.container}>
+      {/* Header */}
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.headerTitle}>HOSTEL FUND - ADMIN</Text>
+          <Text style={styles.headerSubtitle}>Welcome, {user.full_name}</Text>
+        </View>
+        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+          <Text style={styles.logoutText}>Logout</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Tabs */}
+      <View style={styles.tabContainer}>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'dashboard' && styles.activeTab]}
+          onPress={() => setActiveTab('dashboard')}
+        >
+          <Text style={[styles.tabText, activeTab === 'dashboard' && styles.activeTabText]}>
+            Dashboard
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'jobs' && styles.activeTab]}
+          onPress={() => setActiveTab('jobs')}
+        >
+          <Text style={[styles.tabText, activeTab === 'jobs' && styles.activeTabText]}>
+            Jobs
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'students' && styles.activeTab]}
+          onPress={() => setActiveTab('students')}
+        >
+          <Text style={[styles.tabText, activeTab === 'students' && styles.activeTabText]}>
+            Students
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Content */}
+      <ScrollView
+        style={styles.content}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      >
+        {isLoading ? (
+          <ActivityIndicator size="large" color="#9333ea" style={{ marginTop: 50 }} />
+        ) : (
+          <>
+            {activeTab === 'dashboard' && stats && (
+              <View>
+                <View style={styles.statsGrid}>
+                  <View style={styles.statCard}>
+                    <Text style={styles.statLabel}>COMMITTEE FUND</Text>
+                    <Text style={styles.statValue}>₹{stats.committeeFund.toFixed(2)}</Text>
+                  </View>
+                  <View style={styles.statCard}>
+                    <Text style={styles.statLabel}>STUDENTS</Text>
+                    <Text style={styles.statValue}>{stats.totalStudents}</Text>
+                  </View>
+                  <View style={styles.statCard}>
+                    <Text style={styles.statLabel}>TOTAL JOBS</Text>
+                    <Text style={styles.statValue}>{stats.totalJobs}</Text>
+                  </View>
+                  <View style={styles.statCard}>
+                    <Text style={styles.statLabel}>DISTRIBUTED</Text>
+                    <Text style={styles.statValue}>₹{stats.totalDistributed.toFixed(2)}</Text>
+                  </View>
+                </View>
+
+                <TouchableOpacity
+                  style={[styles.button, styles.primaryButton, { marginTop: 20 }]}
+                  onPress={() => setShowJobModal(true)}
+                >
+                  <Text style={styles.buttonText}>+ ADD JOB</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.button, styles.primaryButton, { marginTop: 10 }]}
+                  onPress={() => setShowStudentModal(true)}
+                >
+                  <Text style={styles.buttonText}>+ ADD STUDENT</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {activeTab === 'jobs' && (
+              <View>
+                <TouchableOpacity
+                  style={[styles.button, styles.primaryButton, { marginBottom: 20 }]}
+                  onPress={() => setShowJobModal(true)}
+                >
+                  <Text style={styles.buttonText}>+ ADD JOB</Text>
+                </TouchableOpacity>
+
+                {jobs.map(job => (
+                  <View key={job.id} style={styles.card}>
+                    <Text style={styles.cardTitle}>{job.name}</Text>
+                    <Text style={styles.cardDate}>{job.date}</Text>
+                    <View style={styles.jobDetails}>
+                      <Text style={styles.detailText}>Total: ₹{job.amount}</Text>
+                      <Text style={styles.detailText}>Committee: ₹{job.committee_share.toFixed(2)}</Text>
+                      <Text style={styles.detailText}>Per Student: ₹{job.per_student.toFixed(2)}</Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {activeTab === 'students' && (
+              <View>
+                <TouchableOpacity
+                  style={[styles.button, styles.primaryButton, { marginBottom: 20 }]}
+                  onPress={() => setShowStudentModal(true)}
+                >
+                  <Text style={styles.buttonText}>+ ADD STUDENT</Text>
+                </TouchableOpacity>
+
+                {students.map(student => (
+                  <View key={student.id} style={styles.card}>
+                    <Text style={styles.cardTitle}>{student.full_name}</Text>
+                    <Text style={styles.cardDate}>@{student.username}</Text>
+                    <View style={styles.balanceBadge}>
+                      <Text style={styles.balanceText}>Balance: ₹{student.balance.toFixed(2)}</Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+          </>
+        )}
+      </ScrollView>
+
+      {/* Job Modal */}
+      {showJobModal && (
+        <View style={styles.modalOverlay}>
+          <View style={styles.modal}>
+            <Text style={styles.modalTitle}>ADD JOB</Text>
+            
+            <Text style={styles.label}>Job Name</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Enter job name"
+              value={jobForm.name}
+              onChangeText={text => setJobForm({...jobForm, name: text})}
+            />
+
+            <Text style={styles.label}>Amount (₹)</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Enter amount"
+              keyboardType="numeric"
+              value={jobForm.amount}
+              onChangeText={text => setJobForm({...jobForm, amount: text})}
+            />
+
+            <Text style={styles.label}>Date (YYYY-MM-DD)</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="2024-01-15"
+              value={jobForm.date}
+              onChangeText={text => setJobForm({...jobForm, date: text})}
+            />
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.button, styles.primaryButton, { flex: 1, marginRight: 10 }]}
+                onPress={addJob}
+              >
+                <Text style={styles.buttonText}>ADD</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.button, styles.secondaryButton, { flex: 1 }]}
+                onPress={() => setShowJobModal(false)}
+              >
+                <Text style={styles.buttonText}>CANCEL</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {/* Student Modal */}
+      {showStudentModal && (
+        <View style={styles.modalOverlay}>
+          <View style={styles.modal}>
+            <Text style={styles.modalTitle}>ADD STUDENT</Text>
+            
+            <Text style={styles.label}>Full Name</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Enter full name"
+              value={studentForm.full_name}
+              onChangeText={text => setStudentForm({...studentForm, full_name: text})}
+            />
+
+            <Text style={styles.label}>Username</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Enter username"
+              autoCapitalize="none"
+              value={studentForm.username}
+              onChangeText={text => setStudentForm({...studentForm, username: text})}
+            />
+
+            <Text style={styles.label}>Password</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Enter password"
+              secureTextEntry
+              value={studentForm.password}
+              onChangeText={text => setStudentForm({...studentForm, password: text})}
+            />
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.button, styles.primaryButton, { flex: 1, marginRight: 10 }]}
+                onPress={addStudent}
+              >
+                <Text style={styles.buttonText}>ADD</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.button, styles.secondaryButton, { flex: 1 }]}
+                onPress={() => setShowStudentModal(false)}
+              >
+                <Text style={styles.buttonText}>CANCEL</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
+    </View>
+  );
+}
+
+// STUDENT DASHBOARD
+function StudentDashboard({ token, user, setIsLoggedIn, setUser }) {
+  const [balance, setBalance] = useState(0);
+  const [transactions, setTransactions] = useState([]);
+  const [refreshing, setRefreshing] = useState(false);
+  const [showWithdrawModal, setShowWithdrawModal] = useState(false);
+  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [withdrawDescription, setWithdrawDescription] = useState('');
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const apiCall = async (endpoint, options = {}) => {
+    const response = await fetch(`${API_URL}${endpoint}`, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        ...options.headers
+      }
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Request failed');
+    return data;
+  };
+
+  const loadData = async () => {
+    try {
+      const [balanceData, transData] = await Promise.all([
+        apiCall('/student/balance'),
+        apiCall('/student/transactions')
+      ]);
+      setBalance(balanceData.balance);
+      setTransactions(transData);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to load data');
+    }
+  };
+
+  const handleLogout = async () => {
+    await AsyncStorage.removeItem('token');
+    await AsyncStorage.removeItem('user');
+    setIsLoggedIn(false);
+    setUser(null);
+  };
+
+  const handleWithdraw = async () => {
+    const amount = parseFloat(withdrawAmount);
+
+    if (!amount || amount <= 0) {
+      Alert.alert('Error', 'Please enter a valid amount');
+      return;
+    }
+
+    if (amount > balance) {
+      Alert.alert('Error', 'Insufficient balance');
+      return;
+    }
+
+    try {
+      await apiCall('/student/withdraw', {
+        method: 'POST',
+        body: JSON.stringify({
+          amount,
+          description: withdrawDescription || 'Withdrawal'
+        })
+      });
+
+      Alert.alert('Success', 'Withdrawal successful!');
+      setWithdrawAmount('');
+      setWithdrawDescription('');
+      setShowWithdrawModal(false);
+      loadData();
+    } catch (error) {
+      Alert.alert('Error', error.message);
+    }
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadData();
+    setRefreshing(false);
+  };
+
+  return (
+    <View style={styles.container}>
+      {/* Header */}
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.headerTitle}>MY WALLET</Text>
+          <Text style={styles.headerSubtitle}>Welcome, {user.full_name}</Text>
+        </View>
+        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+          <Text style={styles.logoutText}>Logout</Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView
+        style={styles.content}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      >
+        {/* Balance Card */}
+        <View style={styles.balanceCard}>
+          <Text style={styles.balanceLabel}>YOUR BALANCE</Text>
+          <Text style={styles.balanceAmount}>₹{balance.toFixed(2)}</Text>
+          <TouchableOpacity
+            style={[styles.button, styles.primaryButton, { marginTop: 20 }]}
+            onPress={() => setShowWithdrawModal(true)}
+            disabled={balance <= 0}
+          >
+            <Text style={styles.buttonText}>WITHDRAW MONEY</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Transactions */}
+        <Text style={styles.sectionTitle}>TRANSACTION HISTORY</Text>
+        {transactions.length === 0 ? (
+          <Text style={styles.emptyText}>No transactions yet</Text>
+        ) : (
+          transactions.map(trans => (
+            <View key={trans.id} style={styles.transactionCard}>
+              <View style={styles.transactionHeader}>
+                <View>
+                  <Text style={[
+                    styles.transactionType,
+                    { color: trans.type === 'earning' ? '#10b981' : '#ef4444' }
+                  ]}>
+                    {trans.type.toUpperCase()}
+                  </Text>
+                  <Text style={styles.transactionDesc}>
+                    {trans.description || trans.job_name || 'No description'}
+                  </Text>
+                  <Text style={styles.transactionDate}>
+                    {new Date(trans.created_at).toLocaleString()}
+                  </Text>
+                </View>
+                <Text style={[
+                  styles.transactionAmount,
+                  { color: trans.type === 'earning' ? '#10b981' : '#ef4444' }
+                ]}>
+                  {trans.type === 'earning' ? '+' : '-'}₹{trans.amount.toFixed(2)}
+                </Text>
+              </View>
+            </View>
+          ))
+        )}
+      </ScrollView>
+
+      {/* Withdraw Modal */}
+      {showWithdrawModal && (
+        <View style={styles.modalOverlay}>
+          <View style={styles.modal}>
+            <Text style={styles.modalTitle}>WITHDRAW MONEY</Text>
+            
+            <View style={styles.balanceInfo}>
+              <Text style={styles.balanceInfoLabel}>Available Balance</Text>
+              <Text style={styles.balanceInfoAmount}>₹{balance.toFixed(2)}</Text>
+            </View>
+
+            <Text style={styles.label}>Amount (₹)</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Enter amount"
+              keyboardType="numeric"
+              value={withdrawAmount}
+              onChangeText={setWithdrawAmount}
+            />
+
+            <Text style={styles.label}>Description (Optional)</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="What is this withdrawal for?"
+              value={withdrawDescription}
+              onChangeText={setWithdrawDescription}
+            />
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.button, styles.primaryButton, { flex: 1, marginRight: 10 }]}
+                onPress={handleWithdraw}
+              >
+                <Text style={styles.buttonText}>CONFIRM</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.button, styles.secondaryButton, { flex: 1 }]}
+                onPress={() => setShowWithdrawModal(false)}
+              >
+                <Text style={styles.buttonText}>CANCEL</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#0f0c29',
+  },
+  centerContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#0f0c29',
+  },
+  loginContainer: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    padding: 20,
+  },
+  logoContainer: {
+    alignItems: 'center',
+    marginBottom: 50,
+  },
+  logoText: {
+    fontSize: 60,
+    marginBottom: 20,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: 2,
+    marginBottom: 5,
+  },
+  subtitle: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.7)',
+    letterSpacing: 1,
+  },
+  formContainer: {
+    width: '100%',
+  },
+  label: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '600',
+    marginBottom: 8,
+    letterSpacing: 1,
+  },
+  input: {
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 10,
+    padding: 14,
+    color: '#fff',
+    marginBottom: 16,
+    fontSize: 14,
+  },
+  button: {
+    padding: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  primaryButton: {
+    backgroundColor: '#9333ea',
+  },
+  secondaryButton: {
+    backgroundColor: 'rgba(255,255,255,0.2)',
+  },
+  buttonText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 12,
+    letterSpacing: 1,
+  },
+  infoBox: {
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    padding: 16,
+    borderRadius: 10,
+    marginTop: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  infoText: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 11,
+    marginBottom: 4,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.1)',
+  },
+  headerTitle: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  headerSubtitle: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  logoutButton: {
+    backgroundColor: '#ef4444',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  logoutText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  tabContainer: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(0,0,0,0.2)',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.1)',
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  activeTab: {
+    borderBottomColor: '#9333ea',
+  },
+  tabText: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  activeTabText: {
+    color: '#9333ea',
+  },
+  content: {
+    flex: 1,
+    padding: 20,
+  },
+  statsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+  statCard: {
+    width: '48%',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  statLabel: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 10,
+    fontWeight: '600',
+    letterSpacing: 1,
+    marginBottom: 8,
+  },
+  statValue: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: '700',
+  },
+  card: {
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  cardTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  cardDate: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 11,
+    marginBottom: 12,
+  },
+  jobDetails: {
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    padding: 12,
+    borderRadius: 8,
+  },
+  detailText: {
+    color: '#fff',
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  balanceBadge: {
+    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.4)',
+  },
+  balanceText: {
+    color: '#10b981',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  balanceCard: {
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    padding: 30,
+    borderRadius: 16,
+    alignItems: 'center',
+    marginBottom: 30,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  balanceLabel: {
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 1,
+    marginBottom: 10,
+  },
+  balanceAmount: {
+    color: '#fff',
+    fontSize: 48,
+    fontWeight: '700',
+  },
+  sectionTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 1,
+    marginBottom: 16,
+  },
+  emptyText: {
+    color: 'rgba(255,255,255,0.5)',
+    textAlign: 'center',
+    marginTop: 40,
+    fontSize: 14,
+  },
+  transactionCard: {
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  transactionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  transactionType: {
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 4,
+    letterSpacing: 1,
+  },
+  transactionDesc: {
+    color: '#fff',
+    fontSize: 13,
+    marginBottom: 4,
+  },
+  transactionDate: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 10,
+  },
+  transactionAmount: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  modalOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modal: {
+    backgroundColor: '#1e1b4b',
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 400,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  modalTitle: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 20,
+    letterSpacing: 1,
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    marginTop: 20,
+  },
+  balanceInfo: {
+    backgroundColor: 'rgba(147, 51, 234, 0.2)',
+    padding: 16,
+    borderRadius: 10,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(147, 51, 234, 0.3)',
+  },
+  balanceInfoLabel: {
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 11,
+    marginBottom: 6,
+  },
+  balanceInfoAmount: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: '700',
+  },
+});
