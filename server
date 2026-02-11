@@ -1,0 +1,566 @@
+// backend/server.js
+const express = require('express');
+const sqlite3 = require('sqlite3').verbose();
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
+
+// Middleware
+app.use(cors());
+app.use(bodyParser.json());
+
+// Initialize Database
+const db = new sqlite3.Database('./hostel_fund.db', (err) => {
+  if (err) console.error('Database error:', err);
+  else console.log('Connected to SQLite database');
+});
+
+// Create Tables
+db.serialize(() => {
+  // Users table (both admin and students)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('admin', 'student')),
+      full_name TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Jobs table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      amount REAL NOT NULL,
+      date DATE NOT NULL,
+      committee_share REAL NOT NULL,
+      student_share REAL NOT NULL,
+      created_by INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (created_by) REFERENCES users(id)
+    )
+  `);
+
+  // Student balances table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS student_balances (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      student_id INTEGER NOT NULL,
+      balance REAL DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (student_id) REFERENCES users(id),
+      UNIQUE(student_id)
+    )
+  `);
+
+  // Transactions table (withdrawals and earnings)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      student_id INTEGER NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('earning', 'withdrawal')),
+      amount REAL NOT NULL,
+      job_id INTEGER,
+      description TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (student_id) REFERENCES users(id),
+      FOREIGN KEY (job_id) REFERENCES jobs(id)
+    )
+  `);
+
+  // Committee fund table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS committee_fund (
+      id INTEGER PRIMARY KEY CHECK(id = 1),
+      balance REAL DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Initialize committee fund
+  db.run(`INSERT OR IGNORE INTO committee_fund (id, balance) VALUES (1, 0)`);
+
+  // Create default admin if not exists
+  const defaultPassword = bcrypt.hashSync('admin123', 10);
+  db.run(
+    `INSERT OR IGNORE INTO users (id, username, password, role, full_name) VALUES (1, 'admin', ?, 'admin', 'Administrator')`,
+    [defaultPassword]
+  );
+});
+
+// Middleware: Verify JWT Token
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) return res.status(401).json({ error: 'Access denied' });
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid token' });
+    req.user = user;
+    next();
+  });
+};
+
+// Middleware: Check if user is admin
+const isAdmin = (req, res, next) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
+};
+
+// ======================
+// AUTHENTICATION ROUTES
+// ======================
+
+// Login
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body;
+
+  db.get('SELECT * FROM users WHERE username = ?', [username], (err, user) => {
+    if (err) return res.status(500).json({ error: 'Database error' });
+    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+
+    const validPassword = bcrypt.compareSync(password, user.password);
+    if (!validPassword) return res.status(401).json({ error: 'Invalid credentials' });
+
+    const token = jwt.sign(
+      { id: user.id, username: user.username, role: user.role },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        full_name: user.full_name
+      }
+    });
+  });
+});
+
+// Change Password
+app.post('/api/auth/change-password', authenticateToken, (req, res) => {
+  const { oldPassword, newPassword } = req.body;
+  const userId = req.user.id;
+
+  db.get('SELECT password FROM users WHERE id = ?', [userId], (err, user) => {
+    if (err) return res.status(500).json({ error: 'Database error' });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const validPassword = bcrypt.compareSync(oldPassword, user.password);
+    if (!validPassword) return res.status(401).json({ error: 'Invalid old password' });
+
+    const hashedPassword = bcrypt.hashSync(newPassword, 10);
+    db.run('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, userId], (err) => {
+      if (err) return res.status(500).json({ error: 'Failed to update password' });
+      res.json({ message: 'Password updated successfully' });
+    });
+  });
+});
+
+// ======================
+// ADMIN ROUTES
+// ======================
+
+// Get Dashboard Stats (Admin)
+app.get('/api/admin/dashboard', authenticateToken, isAdmin, (req, res) => {
+  const stats = {};
+
+  // Get committee fund
+  db.get('SELECT balance FROM committee_fund WHERE id = 1', (err, fund) => {
+    if (err) return res.status(500).json({ error: 'Database error' });
+    stats.committeeFund = fund ? fund.balance : 0;
+
+    // Get total students
+    db.get('SELECT COUNT(*) as count FROM users WHERE role = "student"', (err, result) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+      stats.totalStudents = result.count;
+
+      // Get total jobs
+      db.get('SELECT COUNT(*) as count FROM jobs', (err, result) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+        stats.totalJobs = result.count;
+
+        // Get total distributed
+        db.get('SELECT SUM(student_share) as total FROM jobs', (err, result) => {
+          if (err) return res.status(500).json({ error: 'Database error' });
+          stats.totalDistributed = result.total || 0;
+
+          res.json(stats);
+        });
+      });
+    });
+  });
+});
+
+// Add Student (Admin)
+app.post('/api/admin/students', authenticateToken, isAdmin, (req, res) => {
+  const { username, password, full_name } = req.body;
+
+  if (!username || !password || !full_name) {
+    return res.status(400).json({ error: 'All fields required' });
+  }
+
+  const hashedPassword = bcrypt.hashSync(password, 10);
+
+  db.run(
+    'INSERT INTO users (username, password, role, full_name) VALUES (?, ?, "student", ?)',
+    [username, hashedPassword, full_name],
+    function(err) {
+      if (err) {
+        if (err.message.includes('UNIQUE')) {
+          return res.status(400).json({ error: 'Username already exists' });
+        }
+        return res.status(500).json({ error: 'Database error' });
+      }
+
+      // Initialize balance for student
+      db.run(
+        'INSERT INTO student_balances (student_id, balance) VALUES (?, 0)',
+        [this.lastID],
+        (err) => {
+          if (err) return res.status(500).json({ error: 'Failed to initialize balance' });
+          
+          res.json({
+            id: this.lastID,
+            username,
+            full_name,
+            role: 'student'
+          });
+        }
+      );
+    }
+  );
+});
+
+// Get All Students (Admin)
+app.get('/api/admin/students', authenticateToken, isAdmin, (req, res) => {
+  db.all(
+    `SELECT u.id, u.username, u.full_name, u.created_at, 
+            COALESCE(sb.balance, 0) as balance
+     FROM users u
+     LEFT JOIN student_balances sb ON u.id = sb.student_id
+     WHERE u.role = "student"
+     ORDER BY u.full_name`,
+    (err, students) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+      res.json(students);
+    }
+  );
+});
+
+// Delete Student (Admin)
+app.delete('/api/admin/students/:id', authenticateToken, isAdmin, (req, res) => {
+  const studentId = req.params.id;
+
+  db.run('DELETE FROM users WHERE id = ? AND role = "student"', [studentId], function(err) {
+    if (err) return res.status(500).json({ error: 'Database error' });
+    if (this.changes === 0) return res.status(404).json({ error: 'Student not found' });
+
+    // Delete related data
+    db.run('DELETE FROM student_balances WHERE student_id = ?', [studentId]);
+    db.run('DELETE FROM transactions WHERE student_id = ?', [studentId]);
+
+    res.json({ message: 'Student deleted successfully' });
+  });
+});
+
+// Add Job (Admin)
+app.post('/api/admin/jobs', authenticateToken, isAdmin, (req, res) => {
+  const { name, amount, date } = req.body;
+
+  if (!name || !amount || !date) {
+    return res.status(400).json({ error: 'All fields required' });
+  }
+
+  const committeeShare = amount * 0.1;
+  const studentShare = amount * 0.9;
+
+  db.run(
+    'INSERT INTO jobs (name, amount, date, committee_share, student_share, created_by) VALUES (?, ?, ?, ?, ?, ?)',
+    [name, amount, date, committeeShare, studentShare, req.user.id],
+    function(err) {
+      if (err) return res.status(500).json({ error: 'Database error' });
+
+      const jobId = this.lastID;
+
+      // Update committee fund
+      db.run(
+        'UPDATE committee_fund SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1',
+        [committeeShare],
+        (err) => {
+          if (err) return res.status(500).json({ error: 'Failed to update committee fund' });
+
+          // Get all students
+          db.all('SELECT id FROM users WHERE role = "student"', (err, students) => {
+            if (err) return res.status(500).json({ error: 'Database error' });
+
+            if (students.length === 0) {
+              return res.json({
+                id: jobId,
+                name,
+                amount,
+                date,
+                committeeShare,
+                studentShare,
+                perStudent: 0
+              });
+            }
+
+            const perStudent = studentShare / students.length;
+
+            // Update each student's balance and create transaction
+            const updatePromises = students.map(student => {
+              return new Promise((resolve, reject) => {
+                db.run(
+                  'INSERT OR REPLACE INTO student_balances (student_id, balance) VALUES (?, COALESCE((SELECT balance FROM student_balances WHERE student_id = ?), 0) + ?)',
+                  [student.id, student.id, perStudent],
+                  (err) => {
+                    if (err) return reject(err);
+
+                    db.run(
+                      'INSERT INTO transactions (student_id, type, amount, job_id, description) VALUES (?, "earning", ?, ?, ?)',
+                      [student.id, perStudent, jobId, `Earning from: ${name}`],
+                      (err) => {
+                        if (err) return reject(err);
+                        resolve();
+                      }
+                    );
+                  }
+                );
+              });
+            });
+
+            Promise.all(updatePromises)
+              .then(() => {
+                res.json({
+                  id: jobId,
+                  name,
+                  amount,
+                  date,
+                  committeeShare,
+                  studentShare,
+                  perStudent
+                });
+              })
+              .catch(err => {
+                console.error('Error updating student balances:', err);
+                res.status(500).json({ error: 'Failed to update student balances' });
+              });
+          });
+        }
+      );
+    }
+  );
+});
+
+// Get All Jobs (Admin)
+app.get('/api/admin/jobs', authenticateToken, isAdmin, (req, res) => {
+  db.all(
+    `SELECT j.*, 
+            (SELECT COUNT(*) FROM users WHERE role = 'student') as student_count,
+            CASE 
+              WHEN (SELECT COUNT(*) FROM users WHERE role = 'student') > 0 
+              THEN j.student_share / (SELECT COUNT(*) FROM users WHERE role = 'student')
+              ELSE 0 
+            END as per_student
+     FROM jobs j
+     ORDER BY j.date DESC, j.created_at DESC`,
+    (err, jobs) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+      res.json(jobs);
+    }
+  );
+});
+
+// Delete Job (Admin)
+app.delete('/api/admin/jobs/:id', authenticateToken, isAdmin, (req, res) => {
+  const jobId = req.params.id;
+
+  db.get('SELECT * FROM jobs WHERE id = ?', [jobId], (err, job) => {
+    if (err) return res.status(500).json({ error: 'Database error' });
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+
+    // Get all transactions for this job
+    db.all('SELECT student_id, amount FROM transactions WHERE job_id = ?', [jobId], (err, transactions) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+
+      // Reverse the balances
+      const reversePromises = transactions.map(trans => {
+        return new Promise((resolve, reject) => {
+          db.run(
+            'UPDATE student_balances SET balance = balance - ? WHERE student_id = ?',
+            [trans.amount, trans.student_id],
+            (err) => {
+              if (err) return reject(err);
+              resolve();
+            }
+          );
+        });
+      });
+
+      Promise.all(reversePromises)
+        .then(() => {
+          // Update committee fund
+          db.run(
+            'UPDATE committee_fund SET balance = balance - ? WHERE id = 1',
+            [job.committee_share],
+            (err) => {
+              if (err) return res.status(500).json({ error: 'Failed to update committee fund' });
+
+              // Delete transactions
+              db.run('DELETE FROM transactions WHERE job_id = ?', [jobId], (err) => {
+                if (err) return res.status(500).json({ error: 'Failed to delete transactions' });
+
+                // Delete job
+                db.run('DELETE FROM jobs WHERE id = ?', [jobId], (err) => {
+                  if (err) return res.status(500).json({ error: 'Failed to delete job' });
+                  res.json({ message: 'Job deleted successfully' });
+                });
+              });
+            }
+          );
+        })
+        .catch(err => {
+          console.error('Error reversing balances:', err);
+          res.status(500).json({ error: 'Failed to reverse balances' });
+        });
+    });
+  });
+});
+
+// Get Student Transactions (Admin can view any student)
+app.get('/api/admin/students/:id/transactions', authenticateToken, isAdmin, (req, res) => {
+  const studentId = req.params.id;
+
+  db.all(
+    `SELECT t.*, j.name as job_name 
+     FROM transactions t
+     LEFT JOIN jobs j ON t.job_id = j.id
+     WHERE t.student_id = ?
+     ORDER BY t.created_at DESC`,
+    [studentId],
+    (err, transactions) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+      res.json(transactions);
+    }
+  );
+});
+
+// ======================
+// STUDENT ROUTES
+// ======================
+
+// Get Student Balance
+app.get('/api/student/balance', authenticateToken, (req, res) => {
+  if (req.user.role !== 'student') {
+    return res.status(403).json({ error: 'Student access only' });
+  }
+
+  db.get(
+    `SELECT COALESCE(balance, 0) as balance 
+     FROM student_balances 
+     WHERE student_id = ?`,
+    [req.user.id],
+    (err, result) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+      res.json({ balance: result ? result.balance : 0 });
+    }
+  );
+});
+
+// Get Student Transactions
+app.get('/api/student/transactions', authenticateToken, (req, res) => {
+  if (req.user.role !== 'student') {
+    return res.status(403).json({ error: 'Student access only' });
+  }
+
+  db.all(
+    `SELECT t.*, j.name as job_name 
+     FROM transactions t
+     LEFT JOIN jobs j ON t.job_id = j.id
+     WHERE t.student_id = ?
+     ORDER BY t.created_at DESC
+     LIMIT 50`,
+    [req.user.id],
+    (err, transactions) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+      res.json(transactions);
+    }
+  );
+});
+
+// Request Withdrawal (Student)
+app.post('/api/student/withdraw', authenticateToken, (req, res) => {
+  if (req.user.role !== 'student') {
+    return res.status(403).json({ error: 'Student access only' });
+  }
+
+  const { amount, description } = req.body;
+
+  if (!amount || amount <= 0) {
+    return res.status(400).json({ error: 'Invalid amount' });
+  }
+
+  // Check current balance
+  db.get(
+    'SELECT balance FROM student_balances WHERE student_id = ?',
+    [req.user.id],
+    (err, result) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+
+      const currentBalance = result ? result.balance : 0;
+
+      if (currentBalance < amount) {
+        return res.status(400).json({ error: 'Insufficient balance' });
+      }
+
+      // Deduct from balance
+      db.run(
+        'UPDATE student_balances SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE student_id = ?',
+        [amount, req.user.id],
+        (err) => {
+          if (err) return res.status(500).json({ error: 'Failed to update balance' });
+
+          // Create withdrawal transaction
+          db.run(
+            'INSERT INTO transactions (student_id, type, amount, description) VALUES (?, "withdrawal", ?, ?)',
+            [req.user.id, amount, description || 'Withdrawal'],
+            function(err) {
+              if (err) return res.status(500).json({ error: 'Failed to record transaction' });
+
+              res.json({
+                id: this.lastID,
+                newBalance: currentBalance - amount,
+                amount,
+                message: 'Withdrawal successful'
+              });
+            }
+          );
+        }
+      );
+    }
+  );
+});
+
+// ======================
+// START SERVER
+// ======================
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Default admin credentials: username="admin", password="admin123"`);
+});
