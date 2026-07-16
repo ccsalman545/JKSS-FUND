@@ -1,0 +1,12 @@
+node_modules/
+.expo/
+dist/
+web-build/
+*.log
+.DS_Store
+.env
+android/
+ios/
+
+# Signing keystores (keep out of git)
+*.jks
