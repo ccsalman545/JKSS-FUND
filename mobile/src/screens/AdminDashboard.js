@@ -1,7 +1,6 @@
 // src/screens/AdminDashboard.js
-import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, ScrollView, RefreshControl, TouchableOpacity, StyleSheet } from 'react-native';
-import { useAuth } from '../context/AuthContext';
+import React, { useState, useEffect } from 'react';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 import { Screen, Card, StatCard, Subtitle } from '../components/ui';
 import { api } from '../api';
@@ -10,18 +9,14 @@ import { palette } from '../theme';
 import { COMMITTEE_SHARE_PCT, STUDENT_SHARE_PCT } from '../config';
 
 export default function AdminDashboard({ navigation }) {
-  const { token } = useAuth();
   const { theme } = useTheme();
   const [data, setData] = useState(null);
-  const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async () => {
-    const d = await api.dashboard(token);
-    setData(d);
-  }, [token]);
-
-  useEffect(() => { load(); }, [load]);
-  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
+  // Real-time dashboard: updates instantly when students/jobs change.
+  useEffect(() => {
+    const unsub = api.subscribeDashboard(setData);
+    return unsub;
+  }, []);
 
   if (!data) return <Screen />;
 
@@ -53,7 +48,7 @@ export default function AdminDashboard({ navigation }) {
       </Card>
 
       <Text style={[styles.section, { color: theme.text }]}>Recent Jobs</Text>
-      <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />} style={{ flex: 1 }}>
+      <ScrollView style={{ flex: 1 }}>
         {data.jobs.length === 0 ? <Text style={[styles.empty, { color: theme.textMuted }]}>No jobs yet. Tap "Add Job".</Text> : null}
         {data.jobs.map((j) => (
           <Card key={j.id}>
@@ -64,7 +59,7 @@ export default function AdminDashboard({ navigation }) {
               </View>
               <View style={{ alignItems: 'flex-end' }}>
                 <Text style={[styles.jobAmt, { color: theme.text }]}>{formatINR(j.amount)}</Text>
-                <Text style={[styles.jobSplit, { color: theme.textMuted }]}>₹{formatINR(j.student_share)} → students</Text>
+                <Text style={[styles.jobSplit, { color: theme.textMuted }]}>₹{formatINR(j.studentShare)} → students</Text>
               </View>
             </View>
           </Card>

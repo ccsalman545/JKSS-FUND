@@ -7,3 +7,6 @@ web-build/
 .env
 android/
 ios/
+
+# Signing keystores (keep out of git)
+*.jks

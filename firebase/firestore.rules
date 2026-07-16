@@ -1,0 +1,65 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // True if the signed-in user's profile (keyed by their email) exists and is an admin.
+    function isAdmin() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/users/$(request.auth.token.email))
+        && get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'admin';
+    }
+
+    function ownerEmail() {
+      return request.auth.token.email;
+    }
+
+    // Users are stored with document ID = lowercased email.
+    match /users/{email} {
+      allow read: if request.auth != null;
+
+      allow create: if request.auth != null
+        && (ownerEmail() == email || isAdmin());
+
+      allow update: if request.auth != null && (
+        isAdmin()
+        || (
+          ownerEmail() == email
+          && request.resource.data.balance <= resource.data.balance   // students may only lower their balance (withdrawal)
+          && request.resource.data.role == resource.data.role         // cannot change their own role
+          && request.resource.data.email == resource.data.email       // cannot change their own email
+        )
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    // Jobs are admin-managed. The 10/90 split is computed client-side in an
+    // atomic batch (admin write), which these rules permit.
+    match /jobs/{jobId} {
+      allow read: if request.auth != null;
+      allow write: if isAdmin();
+    }
+
+    // Transactions: admin can read/write all; a student may only create their
+    // own withdrawal record.
+    match /transactions/{txId} {
+      allow read: if request.auth != null
+        && (resource.data.studentId == ownerEmail() || isAdmin());
+
+      allow create: if request.auth != null && (
+        isAdmin()
+        || (ownerEmail() == request.resource.data.studentId
+            && request.resource.data.type == 'withdrawal')
+      );
+
+      allow update, delete: if isAdmin();
+    }
+
+    // App metadata (e.g. committee fund balance).
+    match /meta/{doc} {
+      allow read: if request.auth != null;
+      allow write: if isAdmin();
+    }
+  }
+}

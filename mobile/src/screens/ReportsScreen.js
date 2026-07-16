@@ -18,9 +18,9 @@ export default function ReportsScreen() {
   const [data, setData] = useState(null);
 
   const load = useCallback(async () => {
-    const d = await api.reports(token, period);
+    const d = await api.reports(period);
     setData(d);
-  }, [token, period]);
+  }, [period]);
 
   useEffect(() => { load(); }, [load]);
 

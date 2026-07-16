@@ -1,23 +1,16 @@
 // src/context/AuthContext.js
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import * as SecureStore from 'expo-secure-store';
+import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import * as LocalAuthentication from 'expo-local-authentication';
-import * as Notifications from 'expo-notifications';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
+import { auth } from '../firebase';
 import { api } from '../api';
 import { GOOGLE_WEB_CLIENT_ID, GOOGLE_ANDROID_CLIENT_ID } from '../config';
 
 const AuthContext = createContext();
-const TOKEN_KEY = 'jkss_token';
-const USER_KEY = 'jkss_user';
-
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({ shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false }),
-});
 
 export const AuthProvider = ({ children }) => {
-  const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
+  const [token, setToken] = useState(null); // truthy while signed in (email)
   const [loading, setLoading] = useState(true);
   const [biometricSupported, setBiometricSupported] = useState(false);
 
@@ -34,55 +27,37 @@ export const AuthProvider = ({ children }) => {
         setBiometricSupported(compatible && enrolled);
       } catch (e) { /* ignore */ }
     })();
-    bootstrap();
+
+    const unsub = auth().onAuthStateChanged(async (fbUser) => {
+      if (fbUser) {
+        try { await api.ensureCommittee(); } catch (e) { /* ignore */ }
+        try {
+          const profile = await api.ensureProfile(fbUser, 'student');
+          setUser(profile);
+          setToken(fbUser.email);
+        } catch (e) {
+          setUser(null); setToken(null);
+        }
+      } else {
+        setUser(null); setToken(null);
+      }
+      setLoading(false);
+    });
+    return unsub;
   }, []);
 
-  const bootstrap = async () => {
-    try {
-      const [t, u] = await Promise.all([SecureStore.getItemAsync(TOKEN_KEY), SecureStore.getItemAsync(USER_KEY)]);
-      if (t && u) {
-        setToken(t);
-        setUser(JSON.parse(u));
-      }
-    } catch (e) { /* ignore */ }
-    setLoading(false);
-  };
-
-  const persist = async (t, u) => {
-    setToken(t); setUser(u);
-    await SecureStore.setItemAsync(TOKEN_KEY, t);
-    await SecureStore.setItemAsync(USER_KEY, JSON.stringify(u));
-  };
-
-  const registerPush = async (t) => {
-    try {
-      const { status } = await Notifications.requestPermissionsAsync();
-      if (status !== 'granted') return;
-      const tokenData = await Notifications.getExpoPushTokenAsync();
-      await api.registerPush(t, tokenData.data);
-    } catch (e) { /* ignore */ }
-  };
-
-  const login = async (username, password) => {
-    const data = await api.login(username, password);
-    await persist(data.token, data.user);
-    registerPush(data.token);
-    return data.user;
+  const login = async (email, password) => {
+    await api.login(email, password); // onAuthStateChanged updates state
   };
 
   const googleLogin = async (role = 'student') => {
     await GoogleSignin.hasPlayServices();
     const { idToken } = await GoogleSignin.signIn();
-    const data = await api.googleLogin(idToken, role);
-    await persist(data.token, data.user);
-    registerPush(data.token);
-    return data.user;
+    await api.googleLogin(idToken, role);
   };
 
   const logout = async () => {
-    await SecureStore.deleteItemAsync(TOKEN_KEY);
-    await SecureStore.deleteItemAsync(USER_KEY);
-    setToken(null); setUser(null);
+    await auth().signOut();
   };
 
   const promptBiometric = async () => {
@@ -94,15 +69,14 @@ export const AuthProvider = ({ children }) => {
   };
 
   const updateProfile = async (full_name) => {
-    await api.updateProfile(token, full_name);
+    await api.updateProfile(full_name);
     const updated = { ...user, full_name };
     setUser(updated);
-    await SecureStore.setItemAsync(USER_KEY, JSON.stringify(updated));
     return updated;
   };
 
   const changePassword = async (newPassword, oldPassword = '') => {
-    await api.changePassword(token, oldPassword, newPassword);
+    await api.changePassword(newPassword, oldPassword);
   };
 
   const value = useMemo(

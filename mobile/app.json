@@ -2,11 +2,11 @@
   "expo": {
     "name": "JKSS Fund",
     "slug": "jkss-fund",
-    "version": "2.0.0",
+    "version": "3.0.0",
     "icon": "./assets/icon.png",
-    "orientation": "portrait",
     "scheme": "jkssfund",
     "userInterfaceStyle": "automatic",
+    "orientation": "portrait",
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "contain",
@@ -19,16 +19,21 @@
     },
     "android": {
       "package": "com.jkssfund.app",
-      "permissions": ["RECEIVE_BOOT_COMPLETED", "VIBRATE", "USE_BIOMETRIC", "USE_FINGERPRINT"],
+      "permissions": [
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE",
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT",
+        "POST_NOTIFICATIONS"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0f766e"
       }
     },
     "extra": {
-      "apiUrl": "https://your-backend-url.com/api",
       "googleWebClientId": "YOUR_GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com"
     },
-    "plugins": ["expo-local-authentication", "expo-secure-store"]
+    "plugins": ["@react-native-firebase/app"]
   }
 }

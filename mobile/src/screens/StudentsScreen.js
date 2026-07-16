@@ -17,14 +17,13 @@ export default function StudentsScreen() {
   const [showAdd, setShowAdd] = useState(false);
   const [full_name, setFull] = useState('');
   const [username, setUser] = useState('');
-  const [password, setPass] = useState('');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
   const load = useCallback(async () => {
-    const s = await api.dashboard(token);
-    setStudents(s.students);
-  }, [token]);
+    const d = await api.dashboard();
+    setStudents(d.students);
+  }, []);
 
   useEffect(() => { load(); }, [load]);
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
@@ -32,7 +31,7 @@ export default function StudentsScreen() {
   const add = async () => {
     setErr(''); setSaving(true);
     try {
-      await api.addStudent(token, username.trim(), full_name.trim(), password);
+      await api.addStudent(username.trim(), full_name.trim());
       setShowAdd(false); setFull(''); setUser(''); setPass('');
       await load();
     } catch (e) { setErr(e.message); }
@@ -42,7 +41,7 @@ export default function StudentsScreen() {
   const remove = (s) => {
     Alert.alert('Remove student', `Remove ${s.full_name}? This deletes their balance & transactions.`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Remove', style: 'destructive', onPress: async () => { await api.deleteStudent(token, s.id); await load(); } },
+      { text: 'Remove', style: 'destructive', onPress: async () => { await api.deleteStudent(s.id); await load(); } },
     ]);
   };
 
@@ -81,8 +80,7 @@ export default function StudentsScreen() {
           <View style={[styles.modal, { backgroundColor: theme.surface }]}>
             <Text style={[styles.modalTitle, { color: theme.text }]}>Add Student</Text>
             <Input placeholder="Full Name" value={full_name} onChangeText={setFull} />
-            <Input placeholder="Username (e.g. roll no)" value={username} onChangeText={setUser} autoCapitalize="none" />
-            <Input placeholder="Password (optional)" value={password} onChangeText={setPass} secure />
+            <Input placeholder="Username / Email (e.g. roll no)" value={username} onChangeText={setUser} autoCapitalize="none" />
             {err ? <Text style={{ color: palette.danger, marginBottom: 8 }}>{err}</Text> : null}
             <Button label={saving ? 'Saving…' : 'Save Student'} loading={saving} onPress={add} />
             <Button label="Cancel" variant="outline" onPress={() => setShowAdd(false)} />

@@ -1,6 +1,6 @@
 // src/screens/StudentDashboard.js
-import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, RefreshControl, ScrollView, Modal, TextInput, Dimensions } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Modal, TextInput } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { Screen, Card, Button, Subtitle } from '../components/ui';
@@ -9,38 +9,30 @@ import { formatINR, formatDateTime, initials } from '../utils/format';
 import { palette } from '../theme';
 
 export default function StudentDashboard({ navigation }) {
-  const { token, user } = useAuth();
+  const { user } = useAuth();
   const { theme } = useTheme();
-  const [balance, setBalance] = useState(0);
-  const [committee, setCommittee] = useState(0);
+  const [info, setInfo] = useState({ balance: 0, committeeBalance: 0, full_name: user?.full_name || '' });
   const [txns, setTxns] = useState([]);
-  const [refreshing, setRefreshing] = useState(false);
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [amount, setAmount] = useState('');
   const [desc, setDesc] = useState('');
   const [wLoading, setWLoading] = useState(false);
   const [wError, setWError] = useState('');
 
-  const load = useCallback(async () => {
-    const b = await api.balance(token);
-    setBalance(b.balance);
-    setCommittee(b.committeeBalance);
-    const t = await api.transactions(token);
-    setTxns(t.slice(0, 8));
-  }, [token]);
-
-  useEffect(() => { load(); }, [load]);
-
-  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
+  // Real-time: balance + transactions update live when admin adds a job.
+  useEffect(() => {
+    const u1 = api.subscribeBalance(setInfo);
+    const u2 = api.subscribeTransactions(setTxns);
+    return () => { u1(); u2(); };
+  }, []);
 
   const withdraw = async () => {
     setWError(''); setWLoading(true);
     try {
       const amt = parseFloat(amount);
       if (!amt || amt <= 0) throw new Error('Enter a valid amount');
-      await api.withdraw(token, amt, desc || 'Withdrawal');
+      await api.withdraw(amt, desc || 'Withdrawal');
       setShowWithdraw(false); setAmount(''); setDesc('');
-      await load();
     } catch (e) { setWError(e.message); }
     finally { setWLoading(false); }
   };
@@ -50,17 +42,17 @@ export default function StudentDashboard({ navigation }) {
       <View style={styles.header}>
         <View>
           <Subtitle>Welcome back,</Subtitle>
-          <Text style={[styles.name, { color: theme.text }]}>{user?.full_name || 'Student'}</Text>
+          <Text style={[styles.name, { color: theme.text }]}>{info.full_name || user?.full_name || 'Student'}</Text>
         </View>
         <View style={[styles.avatar, { backgroundColor: palette.primary }]}>
-          <Text style={styles.avatarText}>{initials(user?.full_name)}</Text>
+          <Text style={styles.avatarText}>{initials(info.full_name || user?.full_name)}</Text>
         </View>
       </View>
 
       <Card style={[styles.balanceCard, { backgroundColor: palette.primary }]}>
         <Text style={styles.balanceLabel}>Your Balance</Text>
-        <Text style={styles.balanceValue}>{formatINR(balance)}</Text>
-        <Text style={styles.committee}>Committee Fund: {formatINR(committee)}</Text>
+        <Text style={styles.balanceValue}>{formatINR(info.balance)}</Text>
+        <Text style={styles.committee}>Committee Fund: {formatINR(info.committeeBalance)}</Text>
         <Button label="Withdraw" variant="accent" onPress={() => setShowWithdraw(true)} style={styles.withdrawBtn} />
       </Card>
 
@@ -71,7 +63,7 @@ export default function StudentDashboard({ navigation }) {
         </TouchableOpacity>
       </View>
 
-      <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />} style={{ flex: 1 }}>
+      <ScrollView style={{ flex: 1 }}>
         {txns.length === 0 ? <Text style={[styles.empty, { color: theme.textMuted }]}>No transactions yet.</Text> : null}
         {txns.map((t) => (
           <Card key={t.id} style={styles.txn}>
@@ -81,7 +73,7 @@ export default function StudentDashboard({ navigation }) {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={[styles.txnDesc, { color: theme.text }]}>{t.description}</Text>
-                <Text style={[styles.txnDate, { color: theme.textMuted }]}>{formatDateTime(t.created_at)}</Text>
+                <Text style={[styles.txnDate, { color: theme.textMuted }]}>{formatDateTime(t.createdAt?.toDate ? t.createdAt.toDate() : t.createdAt)}</Text>
               </View>
               <Text style={[styles.txnAmt, { color: t.type === 'earning' ? palette.success : palette.danger }]}>
                 {t.type === 'earning' ? '+' : '-'}{formatINR(t.amount)}
@@ -95,7 +87,7 @@ export default function StudentDashboard({ navigation }) {
         <View style={styles.modalBackdrop}>
           <View style={[styles.modal, { backgroundColor: theme.surface }]}>
             <Text style={[styles.modalTitle, { color: theme.text }]}>Withdraw Money</Text>
-            <Subtitle>Available: {formatINR(balance)}</Subtitle>
+            <Subtitle>Available: {formatINR(info.balance)}</Subtitle>
             <TextInput placeholder="Amount (₹)" keyboardType="numeric" value={amount}
               onChangeText={setAmount} placeholderTextColor={theme.textMuted}
               style={[styles.modalInput, { color: theme.text, borderColor: theme.border, backgroundColor: theme.surfaceAlt }]} />

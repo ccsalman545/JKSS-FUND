@@ -18,8 +18,8 @@ export default function TransactionsScreen({ route }) {
 
   const load = useCallback(async () => {
     let data;
-    if (studentId && user?.role === 'admin') data = await api.studentTransactions(token, studentId);
-    else data = await api.transactions(token);
+    if (studentId && user?.role === 'admin') data = await api.studentTransactions(studentId);
+    else data = await api.transactions();
     setTxns(data);
     const t = data.reduce((s, x) => s + (x.type === 'earning' ? x.amount : -x.amount), 0);
     setTotal(t);
@@ -50,7 +50,7 @@ export default function TransactionsScreen({ route }) {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={[styles.txnDesc, { color: theme.text }]}>{t.description}</Text>
-                <Text style={[styles.txnDate, { color: theme.textMuted }]}>{formatDateTime(t.created_at)}</Text>
+                <Text style={[styles.txnDate, { color: theme.textMuted }]}>{formatDateTime(t.createdAt?.toDate ? t.createdAt.toDate() : t.createdAt)}</Text>
               </View>
               <Text style={[styles.txnAmt, { color: t.type === 'earning' ? palette.success : palette.danger }]}>
                 {t.type === 'earning' ? '+' : '-'}{formatINR(t.amount)}

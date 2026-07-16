@@ -22,9 +22,9 @@ export default function JobsScreen() {
   const [err, setErr] = useState('');
 
   const load = useCallback(async () => {
-    const d = await api.dashboard(token);
+    const d = await api.dashboard();
     setJobs(d.jobs);
-  }, [token]);
+  }, []);
 
   useEffect(() => { load(); }, [load]);
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
@@ -32,7 +32,7 @@ export default function JobsScreen() {
   const add = async () => {
     setErr(''); setSaving(true);
     try {
-      await api.addJob(token, name.trim(), parseFloat(amount), date);
+      await api.addJob(name.trim(), parseFloat(amount), date);
       setShowAdd(false); setName(''); setAmount('');
       await load();
     } catch (e) { setErr(e.message); }
@@ -42,7 +42,7 @@ export default function JobsScreen() {
   const remove = (j) => {
     Alert.alert('Delete job', `Delete "${j.name}"? Student balances will be reversed.`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => { await api.deleteJob(token, j.id); await load(); } },
+      { text: 'Delete', style: 'destructive', onPress: async () => { await api.deleteJob(j.id); await load(); } },
     ]);
   };
 
