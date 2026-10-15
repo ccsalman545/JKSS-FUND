@@ -28,8 +28,8 @@
 //   node provision.js plan --project X   # dry-run plan against a project/emulator
 //   node provision.js apply --apply --project X --credentials key.json --confirm-project X
 //   node provision.js verify-identifier --project jkss-fund-prelaunch --credentials key.json
-//   node provision.js reset-password --username thangal --apply --project X --credentials key.json
-//   node provision.js migrate-identity --legacy old@mail.com --username thangal --apply ...
+//   node provision.js reset-password --username sayyid.zain --apply --project X --credentials key.json
+//   node provision.js migrate-identity --legacy old@mail.com --username sayyid.zain --apply ...
 //   node provision.js help
 //
 // See tools/provision/README.md and docs/USERNAME_LOGIN.md.
@@ -43,11 +43,14 @@ const creds = require('./lib/credentials');
 const fb = require('./lib/firebase');
 const planLib = require('./lib/plan');
 const { generateTemporaryPassword } = require('./lib/passwords');
+const sharedPw = require('./lib/shared-password');
+const testModeLib = require('./lib/test-mode');
 const report = require('./lib/report');
 
 const HERE = __dirname;
 const DEFAULT_ROSTER = path.join(HERE, 'roster.json');
 const PRODUCTION_PROJECT = 'jkss-fund'; // never allow silent writes here
+const REPO_ROOT = path.resolve(HERE, '..', '..');
 
 /* ------------------------------------------------------------------- args -- */
 
@@ -70,6 +73,9 @@ const KNOWN_FLAGS = {
   '--json': 'bool',
   '--show-passwords': 'bool',
   '--allow-production-check': 'bool',
+  '--shared-password-file': 'value',
+  '--allow-unrostered': 'bool',
+  '--test-mode-shared-password': 'bool',
   '--keep': 'bool',
   '--quiet': 'bool',
   '--help': 'bool',
@@ -109,7 +115,7 @@ function usage() {
     '  plan                                    roster → username → identifier plan (default)',
     '  apply                                   create the Auth accounts + pre-authorized profiles',
     '  verify-identifier                       preflight: prove Firebase Auth accepts the identifier format',
-    '  reset-password --username <u>            give one student a new random temporary password',
+    '  reset-password --username <u>            give ONE existing student a new RANDOM temporary password (explicit; never the shared one)',
     '  migrate-identity --legacy <id> --username <u>',
     '                                          re-key ONE legacy (real-email) identity to a username',
     '  help                                    this text',
@@ -129,6 +135,13 @@ function usage() {
     '  --legacy <id>              migrate-identity: the old document id (real email) to re-key',
     '  --username <u>             reset-password / migrate-identity: which student',
     "  --name <full name>         migrate-identity: display name for the migrated profile",
+    '  --shared-password-file <f> apply: OPT-IN owner-supplied shared initial password for NEW accounts only',
+    '                             (one line, mode 0600, outside the repo or git-ignored; see docs/USERNAME_LOGIN.md)',
+    '  --test-mode-shared-password  apply: TEST ONLY. With --shared-password-file, skip the length (6 minimum)',
+    '                             and roster-name checks. Requires BOTH emulators (loopback), a test project',
+    '                             id, and never jkss-fund. Refused otherwise (docs/USERNAME_LOGIN.md §4.6).',
+    '  --allow-unrostered         apply: proceed although synthetic identities exist that are NOT on the roster',
+    '                             (they are then left untouched; without this flag apply refuses to write)',
     '  --allow-production-check   verify-identifier: allow --project jkss-fund itself (read-only)',
     '  --quiet                    print only the essentials',
     '  --help                     this text (same as `help`)',
@@ -224,6 +237,37 @@ async function cmdApply(flags) {
   const { roster, file: rosterFile } = loadRoster(flags['--roster']);
   if (!flags['--project']) throw new Error('apply needs --project <firebase-project-id>');
 
+  // TEST MODE (emulators only, never jkss-fund): the gate runs BEFORE the
+  // password file is read. It refuses unless both emulators answer.
+  const testMode = !!flags['--test-mode-shared-password'];
+  if (testMode && !flags['--shared-password-file']) {
+    throw new Error('--test-mode-shared-password needs --shared-password-file');
+  }
+  let testVerified = null;
+  if (testMode) {
+    testVerified = await testModeLib.assertTestModeAllowed({
+      project: flags['--project'],
+      env: process.env,
+      probe: (o) => testModeLib.probeEmulators(o),
+    });
+  }
+
+  // Opt-in shared initial password: the file is validated BEFORE any project
+  // access, so a bad file fails fast and writes nothing. The password is never
+  // printed or logged; it is used only for accounts created by this run.
+  let shared = null;
+  if (flags['--shared-password-file']) {
+    shared = sharedPw.readSharedPasswordFile(flags['--shared-password-file'], {
+      students: roster, repoRoot: REPO_ROOT, testMode,
+    });
+  }
+  if (testMode && !flags['--json']) {
+    console.log('!! TEST MODE — emulators verified (auth ' + testVerified.authHost + ', firestore ' +
+      testVerified.firestoreHost + '), project ' + testVerified.project + '.');
+    console.log('   The shared password length and roster-name checks are bypassed for THIS run only.');
+    console.log('   This is not production. The password is never printed or stored.\n');
+  }
+
   if (!dryRun) requireLiveGate({ flags });
   const { live, handle } = await loadLive({ flags, roster });
 
@@ -241,6 +285,25 @@ async function cmdApply(flags) {
     console.log('');
   }
 
+  // Synthetic student identities that exist in the project but are NOT on the
+  // roster (e.g. a student removed from roster.json). Never deleted or changed.
+  // Writing is refused unless the owner explicitly accepts them (--allow-unrostered).
+  const unrostered = plan.unrostered || [];
+  if (unrostered.length && !flags['--json']) {
+    console.log('!! ' + unrostered.length + ' student identit' + (unrostered.length === 1 ? 'y exists' : 'ies exist') +
+      ' in the project but NOT on the roster (left untouched):');
+    unrostered.forEach((u) => console.log('   ' + u.id + '  ' + (u.profile ? 'profile' : '') +
+      (u.profile && u.auth ? ' + ' : '') + (u.auth ? 'login' : '') +
+      (u.profile && u.balancePaise != null ? '  balance ' + u.balancePaise + ' paise' : '')));
+    console.log('');
+  }
+  if (unrostered.length && !dryRun && !flags['--allow-unrostered']) {
+    await handle.app.delete();
+    throw new Error(unrostered.length + ' synthetic identit' + (unrostered.length === 1 ? 'y is' : 'ies are') +
+      ' not on the roster. Nothing was written. If this is intentional (for example a student removed from ' +
+      'roster.json), re-run with --allow-unrostered; those records will still be left untouched.');
+  }
+
   const held = plan.students.filter((s) => !s.createAllowed);
   const actionable = plan.students.filter((s) => s.createAllowed);
   // Decided BEFORE any write: the backfill may only touch non-frozen profiles
@@ -255,7 +318,8 @@ async function cmdApply(flags) {
     backfills: { applied: 0, skipped: 0 },
     errors: [],
   };
-  const passwordsShown = [];
+  const passwordsShown = []; // random mode only; shared mode never adds to this list
+  let newAccounts = 0;
   const credFile = credentialsPath(flags);
   const data = (dryRun ? creds.emptyCredentials({ project: flags['--project'], domain: identity.STUDENT_EMAIL_DOMAIN, dryRun: true }) : null)
     || creds.readCredentials(credFile)
@@ -272,23 +336,24 @@ async function cmdApply(flags) {
     try {
       // ---- 1. Auth account --------------------------------------------------
       let authResult = { created: false, skipped: 'dry-run' };
-      let password = null;
+      let newPassword = null; // the password given to a NEW account by this run
       if (!dryRun) {
-        const recorded = creds.findStudent(data, st.username);
         if (st.auth) {
           authResult = { created: false, skipped: 'auth-account-exists' };
         } else {
-          password = generateTemporaryPassword();
+          // Default: a unique random password per account. Opt-in: the owner's
+          // shared initial password. Either way it is used for NEW accounts only.
+          newPassword = shared ? shared.password : generateTemporaryPassword();
           authResult = await fb.createAuthUser({
             auth: handle.auth,
             identifier: st.identifier,
-            password,
+            password: newPassword,
             fullName: st.name,
           });
-          if (!authResult.created) password = null; // raced/exists: never record a wrong password
+          if (!authResult.created) newPassword = null; // raced/exists: nothing to record
         }
       }
-      if (authResult.created) result.created.auth += 1;
+      if (authResult.created) { result.created.auth += 1; newAccounts += 1; }
       else result.skipped.auth += 1;
 
       // ---- 2. Pre-authorized profile ---------------------------------------
@@ -312,12 +377,20 @@ async function cmdApply(flags) {
           identifier: st.identifier,
           status: authResult.created ? 'created' : 'exists',
         };
-        if (password) record.password = password;
+        if (newPassword) {
+          if (shared) {
+            // Shared mode: the credentials file records the FACT, never the password.
+            record.passwordSource = 'owner-shared-initial';
+          } else {
+            record.passwordSource = 'generated-random';
+            record.password = newPassword;
+            passwordsShown.push({ username: st.username, password: newPassword });
+          }
+        }
         const upserted = creds.upsertStudent(data, record);
-        if (upserted.keptExistingPassword && !password && !authResult.created) {
+        if (upserted.keptExistingPassword && !newPassword && !authResult.created) {
           record.status = 'exists';
         }
-        if (password) passwordsShown.push({ username: st.username, password });
       }
     } catch (e) {
       result.errors.push({ student: st.name, username: st.username, error: String(e.message || e) });
@@ -336,7 +409,7 @@ async function cmdApply(flags) {
 
   // ---- 5. Credentials + reports -------------------------------------------
   let writtenCredentials = null;
-  if (!dryRun && passwordsShown.length) {
+  if (!dryRun && newAccounts > 0) {
     data.project = data.project || flags['--project'];
     data.domain = identity.STUDENT_EMAIL_DOMAIN;
     data.generatedAt = new Date().toISOString();
@@ -357,10 +430,18 @@ async function cmdApply(flags) {
       credentialsFile: writtenCredentials,
       dryRun,
       passwordsShown: flags['--show-passwords'] ? passwordsShown : null,
+      passwordMode: shared ? (testMode ? 'shared-test' : 'shared') : 'random',
     }));
-    if (writtenCredentials && !flags['--show-passwords']) {
+    if (writtenCredentials && !shared && !flags['--show-passwords']) {
       console.log('\nPasswords were written ONLY to the credentials file above (mode 0600).');
       console.log('Re-run with --show-passwords to print them, then delete the file.');
+    }
+    if (writtenCredentials && shared) {
+      console.log('\nThe credentials file lists usernames only. The shared password is NOT stored or printed by this tool.');
+    }
+    if (shared && !dryRun && newAccounts > 0) {
+      console.log('\nEach student must change the shared initial password after the first sign-in.');
+      console.log('The app does NOT enforce this (see docs/USERNAME_LOGIN.md §4.6).');
     }
     if (result.errors.length) {
       console.log('\n!! ERRORS (' + result.errors.length + ') — nothing was rolled back for later entries:');
@@ -600,6 +681,9 @@ async function main() {
   if (flags['--help'] || args.command === 'help') {
     console.log(usage());
     return 0;
+  }
+  if (flags['--test-mode-shared-password'] && args.command !== 'apply') {
+    throw new Error('--test-mode-shared-password is only valid with the apply command');
   }
   switch (args.command) {
     case 'plan': return cmdPlan(flags);

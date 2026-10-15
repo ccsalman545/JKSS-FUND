@@ -29,6 +29,9 @@ function eq(a, b, msg) {
   if (a !== b) throw new Error((msg || 'eq') + ': ' + JSON.stringify(a) + ' !== ' + JSON.stringify(b));
 }
 function ok(v, msg) { if (!v) throw new Error(msg || 'expected truthy'); }
+function deepEq(a, b, msg) {
+  if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error((msg || 'deepEq') + ': ' + JSON.stringify(a) + ' !== ' + JSON.stringify(b));
+}
 function assertThrows(fn, re, msg) {
   try { fn(); } catch (e) {
     if (re && !re.test(String(e.message))) throw new Error((msg || 'throw') + ': got "' + e.message + '"');
@@ -50,6 +53,14 @@ check('roster.json: 24 students, names only (no emails anywhere)', () => {
     ok(s.name, 'name missing at ' + i);
     eq(/@/.test(JSON.stringify(s)), false, 'roster entry contains an email');
   });
+});
+check('roster.json: the approved 24 names, in order (Sayyid Zain replaces Thangal; nothing else changed)', () => {
+  const expected = ['Sayyid Zain', 'Shafi', 'Aboobacker', 'Salman', 'Hamid', 'Muhsin Chelakkulam', 'Midlaj', 'Haneen',
+    'Swalih', 'Adil', 'Muhsin Payyoli', 'Salahudheen', 'Irfan', 'Thalhath', 'Sinan', 'Thajudheen', 'Suhail', 'Anwar',
+    'Swabeeh', 'Muneeb', 'Bilal', 'Sidheeq', 'Aflah', 'Adil Jr'];
+  deepEq(ROSTER_JSON.students.map((s) => s.name), expected, 'roster names');
+  eq(roster[0].username, 'sayyid.zain');
+  ok(!roster.some((r) => r.username === 'thangal'), 'Thangal must no longer be on the roster');
 });
 check('roster.json declares the same domain the app builds identifiers with', () => {
   eq(ROSTER_JSON.domain, identity.STUDENT_EMAIL_DOMAIN);
@@ -115,8 +126,8 @@ check('scorePair: exact name match is the top auto-link tier', () => {
   eq(m.score, planLib.SCORE.exactName);
 });
 check('scorePair: email local part == name is a strong match', () => {
-  const s = roster.find((r) => r.name === 'Thangal');
-  const m = planLib.scorePair(s, { id: 'thangal@gmail.com', full_name: '' });
+  const s = roster.find((r) => r.name === 'Shafi');
+  const m = planLib.scorePair(s, { id: 'shafi@gmail.com', full_name: '' });
   eq(m.score, planLib.SCORE.identifierLocal);
 });
 check('scorePair: shared first name alone is only a weak signal', () => {
@@ -399,6 +410,53 @@ check('report: a blocking ambiguity is rendered as MANUAL REVIEW REQUIRED', () =
   ok(text.includes('multiple existing profiles match this student equally well'));
   const salman = p.students.find((s) => s.name === 'Salman');
   eq(salman.createAllowed, false);
+});
+
+/* ------------- synthetic identities that are NOT on the roster ----------- */
+// A student removed from roster.json (e.g. Thangal) may still have a login and
+// a profile. The planner reports them, never touches them, and never backfills
+// them, even when apply is run with --allow-unrostered.
+const UFIX = {
+  roster: planLib.buildRoster({ students: [{ name: 'Bilal' }] }),
+  live: {
+    authUsers: [
+      { uid: 'u1', email: 'bilal@students.jkss-fund.invalid', hasPassword: true },
+      { uid: 'u2', email: 'thangal@students.jkss-fund.invalid', hasPassword: true },
+      { uid: 'u3', email: 'admin@example.com', hasPassword: true },
+    ],
+    profiles: [
+      { id: 'thrikkakarajkss', role: 'admin', full_name: 'Admin', balancePaise: 0, balance: 0 },
+      { id: 'bilal@students.jkss-fund.invalid', role: 'student', full_name: 'Bilal', balancePaise: 0, balance: 0 },
+      { id: 'thangal@students.jkss-fund.invalid', role: 'student', full_name: 'Thangal', balancePaise: 4200, balance: 42 },
+      { id: 'former@gmail.com', role: 'student', full_name: 'Zaid', balancePaise: 0, balance: 0 },
+    ],
+    jobs: [],
+  },
+};
+check('unrostered: a synthetic profile + login not on the roster is reported (never a roster student)', () => {
+  const p = planLib.buildPlan({ roster: UFIX.roster, live: UFIX.live, projectId: 'x' });
+  const t = p.unrostered.find((u) => u.id === 'thangal@students.jkss-fund.invalid');
+  ok(t, 'thangal must be reported');
+  eq(t.profile, true);
+  eq(t.auth, true);
+  eq(t.balancePaise, 4200, 'balance is shown so the owner can see what is left behind');
+  eq(p.summary.unrosteredCount, 1);
+  ok(!p.unrostered.some((u) => u.id === 'bilal@students.jkss-fund.invalid'), 'a roster student is not unrostered');
+  ok(!p.unrostered.some((u) => u.id === 'thrikkakarajkss'), 'admin profiles are never unrostered');
+  ok(!p.unrostered.some((u) => u.id === 'admin@example.com'), 'a non-synthetic login is not unrostered');
+  ok(!p.unrostered.some((u) => u.id === 'former@gmail.com'), 'a real-email former profile is "unmatched", not unrostered');
+});
+check('unrostered: a synthetic profile is FROZEN — never in the txnSeq backfill, even with a missing txnSeq', () => {
+  const p = planLib.buildPlan({ roster: UFIX.roster, live: UFIX.live, projectId: 'x' });
+  ok(!p.txnSeqBackfill.some((b) => b.id === 'thangal@students.jkss-fund.invalid'), 'unrostered profile must not be backfilled');
+  ok(p.frozenProfileIds.includes('thangal@students.jkss-fund.invalid'), 'unrostered profile must be listed as frozen');
+  const ids = planLib.backfillTargets(p);
+  ok(!ids.includes('thangal@students.jkss-fund.invalid'), 'backfillTargets must exclude it');
+});
+check('unrostered: none on a clean roster (no false alarms)', () => {
+  const clean = planLib.buildPlan({ roster, live: { authUsers: [], profiles: [], jobs: [] }, projectId: 'x' });
+  eq(clean.unrostered.length, 0);
+  eq(clean.summary.unrosteredCount, 0);
 });
 
 /* --------------------------- the shipped roster --------------------------- */

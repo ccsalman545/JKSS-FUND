@@ -2,8 +2,11 @@
 // Cryptographically random temporary passwords for student accounts.
 //
 // Rules honored here (see docs/USERNAME_LOGIN.md):
-//   * NEVER a name-based/predictable password (no "thangal123"),
-//   * NEVER one shared password,
+//   * NEVER a name-based/predictable password (no "sayyid123"),
+//   * the DEFAULT is a unique random password per account. The only shared
+//     password is the OPT-IN owner-supplied initial password read from a local
+//     file by `apply --shared-password-file` (lib/shared-password.js). It is
+//     never generated here, and `reset-password` always uses this generator,
 //   * generated with Node's CSPRNG (crypto.randomInt — unbiased rejection
 //     sampling), not Math.random,
 //   * unambiguous alphabet (no O/0, I/l/1) because these are dictated to

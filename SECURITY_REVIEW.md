@@ -996,14 +996,16 @@ touching production.
 
 ### 11.3 Residual risks introduced by v3.0 (honest list)
 
-1. **The identifier is guessable from the roster** (`thangal@…`). It is not a
+1. **The identifier is guessable from the roster** (`sayyid.zain@…`). It is not a
    secret and is not treated as one: the password is the credential, sign-in
    failures are indistinguishable between "unknown username" and "wrong
    password", and Firestore access still requires the pre-authorized profile.
 2. **The temporary-password distribution channel is human.** The credentials
    file is plaintext by necessity (it must be handed out) — mode 0600,
-   git-ignored, one password per student, never a shared or name-based one. Move
-   it into a password manager and delete it after distribution.
+   git-ignored. By default there is one random password per student, never a shared
+   or name-based one. The only exception is the OPT-IN shared initial password
+   (`apply --shared-password-file`, item 6). Move the credentials file into a password
+   manager and delete it after distribution.
 3. **Admin-side resets are a privileged local operation.** Anyone holding the
    service-account key can reset a password. Treat that key like the fund's
    bank credentials; it never belongs in the app or the repo.
@@ -1017,3 +1019,18 @@ touching production.
    authorization document for them. The planner keeps them out of creation, so no
    duplicate profile or balance is made. Migrating them carries the *legacy lien* caveat
    documented in `docs/USERNAME_LOGIN.md` §7.4.
+6. **Opt-in shared initial password (`--shared-password-file`).** The owner may give
+   the accounts created in one run the same starting password. The risk is concentrated:
+   whoever learns it can sign in to every account that still uses it. Mitigations, all
+   implemented and tested: the file must be a single line, mode 0600, owned by the
+   operator, outside the repo or git-ignored; the password must be 12+ characters and
+   must not contain any roster username or name; it is never printed, logged, stored in
+   the credentials file, or sent to Firestore; it is used only for accounts that do not
+   exist yet; reruns and `apply` never change an existing password. **Not mitigated: the
+   app does not enforce a first-login change.** The advice in the app is not a gate, and
+   nothing stops a student from keeping the shared password. Enforcing the change would
+   need a profile flag and a Firestore rules change; neither exists.
+   **TEST MODE** (`--test-mode-shared-password`, emulator-only): relaxes only the length floor
+   (6 characters, the Firebase Auth minimum) and the roster-name check. It is refused for
+   `jkss-fund`, unless both the Auth and Firestore emulators are active and the probe succeeds.
+   It is never accepted for the live project, and every other password rule still applies.

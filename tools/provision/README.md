@@ -79,8 +79,10 @@ node provision.js                        # dry run, offline: the 24 mappings
                                          # (only a local 0600 report file is written)
 node provision.js plan  --project X …    # read-only plan against the project
 node provision.js apply --project X --confirm-project X --apply
+node provision.js apply --project X --shared-password-file ~/jkss-secrets/shared-initial-password.txt   # opt-in shared mode, dry run
+node provision.js apply --project jkss-fund-e2e --shared-password-file <file> --test-mode-shared-password   # TEST MODE: emulators only, never jkss-fund
 node provision.js verify-identifier --project <TEST-project> [--api-key K]
-node provision.js reset-password --username thangal --project X --apply
+node provision.js reset-password --username sayyid.zain --project X --apply
 node provision.js migrate-identity --legacy old@mail.com --username salman --apply …
 node provision.js help
 ```
@@ -92,7 +94,16 @@ runbook, the migration options, and the manual deployment checklist.
 ## 4. What it will never do
 
 * Reset or overwrite an existing password (reruns are idempotent; resets are an
-  explicit `reset-password`).
+  explicit `reset-password`, which always uses a random password, even when the
+  shared initial password mode is used for new accounts).
+* Accept a short or roster-named password, except in TEST MODE: `--test-mode-shared-password` is accepted only when both emulators are active, the project is not `jkss-fund`, and the emulator probe succeeds (`docs/USERNAME_LOGIN.md` §4.6).
+* Use a shared password unless you opt in with `--shared-password-file` (one owner-supplied
+  line, mode 0600, outside the repo; validation rules and the setup in
+  `docs/USERNAME_LOGIN.md` §4.6). The tool never prints or stores that password, and the
+  app does not enforce a first-login change of it.
+* Write while a synthetic student identity exists that is NOT on the roster. `apply`
+  refuses (nothing is written) unless you pass `--allow-unrostered`, and even then such
+  records are left untouched.
 * Overwrite a profile, a balance, a role, a transaction, a job or the committee
   document. The only field it adds is `txnSeq: 0`, and only where it is missing.
 * Create a second profile for a student who already has one (such students are

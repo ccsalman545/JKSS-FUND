@@ -48,6 +48,7 @@ function renderPlan(plan) {
   lines.push('Auth accounts already existing ... ' + s.authAlreadyExist);
   lines.push('profiles to CREATE ............... ' + s.toCreateProfile);
   lines.push('profiles already existing ........ ' + s.profileAlreadyExist);
+  lines.push('NOT on roster (left untouched) ... ' + (s.unrosteredCount || 0));
   lines.push('students to CREATE ............... ' + s.toCreate);
   lines.push('students needing MANUAL REVIEW ... ' + s.needsReview + ' (blocking)');
   lines.push('students held for MIGRATION ...... ' + s.heldForMigration + ' (existing profile)');
@@ -131,7 +132,7 @@ function renderPlan(plan) {
   return lines.join('\n');
 }
 
-function renderApplyResult({ project, created, skipped, backfills, credentialsFile, dryRun, passwordsShown }) {
+function renderApplyResult({ project, created, skipped, backfills, credentialsFile, dryRun, passwordsShown, passwordMode }) {
   const lines = [];
   lines.push((dryRun ? 'DRY RUN — nothing was written.' : 'APPLY COMPLETE.'));
   lines.push('project: ' + project);
@@ -143,6 +144,11 @@ function renderApplyResult({ project, created, skipped, backfills, credentialsFi
   lines.push('txnSeq:0 backfills written ....... ' + backfills.applied);
   lines.push('students HELD (review/migration) . ' + skipped.held);
   lines.push('passwords reset .................. 0 (reruns never reset passwords)');
+  lines.push('password mode .................... ' + (passwordMode === 'shared-test'
+    ? 'owner shared initial password for NEW accounts, TEST MODE (emulators only; not printed or stored)'
+    : passwordMode === 'shared'
+      ? 'owner shared initial password for NEW accounts (not printed or stored)'
+      : 'unique random password per NEW account'));
   lines.push('');
   if (credentialsFile) lines.push('credentials file: ' + credentialsFile + ' (mode 0600, git-ignored)');
   if (passwordsShown && passwordsShown.length) {
