@@ -6,7 +6,7 @@
   "main": "provision.js",
   "scripts": {
     "plan": "node provision.js",
-    "test": "node test/plan.test.js && node test/passwords.test.js",
+    "test": "node test/plan.test.js && node test/apply.test.js && node test/passwords.test.js",
     "test:emulator": "node test/emulator.test.js"
   },
   "engines": {

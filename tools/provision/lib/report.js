@@ -54,6 +54,9 @@ function renderPlan(plan) {
   lines.push('students on ROSTER HOLD .......... ' + (s.rosterHold || 0) + ' (roster.json "hold": true)');
   lines.push('weak name-only matches (warn) .... ' + s.weakMatches);
   lines.push('txnSeq:0 backfills required ...... ' + s.txnSeqBackfillCount);
+  lines.push('txnSeq:0 FROZEN (held, untouched) . ' + (s.txnSeqFrozenCount || 0) +
+    '  (decision D-1: held legacy profiles are never written)');
+  (plan.txnSeqFrozen || []).forEach((f) => lines.push('      frozen: ' + f.id + '  — ' + f.reason));
   lines.push('admin profiles PRESERVED ......... ' + (plan.adminProfiles || []).length);
   lines.push('live Firestore user docs ......... ' + plan.live.profileCount);
   lines.push('live Auth users .................. ' + plan.live.authUserCount);

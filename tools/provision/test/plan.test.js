@@ -247,6 +247,85 @@ check('roster hold: on a legacy-matched student the migration detail is kept', (
 check('roster hold: the committed roster.json holds nobody by default', () => {
   eq(roster.filter((r) => r.hold).length, 0, 'the hold list is populated from the review, not guessed');
 });
+/* ------------- decision D-1: held profiles are frozen (never backfilled) ------------- */
+// Fixture: Anwar has a legacy profile WITHOUT txnSeq (held under Option B);
+// Bilal has his OWN synthetic profile WITHOUT txnSeq (eligible);
+// Zaid is an unmatched former profile WITHOUT txnSeq (kept on the normal backfill).
+const DFIX = {
+  roster: planLib.buildRoster({ students: [{ name: 'Anwar' }, { name: 'Bilal' }] }),
+  live: {
+    authUsers: [],
+    profiles: [
+      { id: 'legacy.anwar@gmail.com', role: 'student', full_name: 'Anwar', balancePaise: 500, balance: 5 },
+      { id: 'bilal@students.jkss-fund.invalid', role: 'student', full_name: 'Bilal', balancePaise: 0, balance: 0 },
+      { id: 'former@gmail.com', role: 'student', full_name: 'Zaid', balancePaise: 0, balance: 0 },
+    ],
+    jobs: [],
+  },
+};
+
+check('D-1: a held legacy profile with no txnSeq is FROZEN — not in the backfill list', () => {
+  const p = planLib.buildPlan(DFIX);
+  const ids = p.txnSeqBackfill.map((x) => x.id);
+  ok(!ids.includes('legacy.anwar@gmail.com'), 'held legacy profile must not be backfilled');
+  ok(p.frozenProfileIds.includes('legacy.anwar@gmail.com'), 'and must be reported as frozen');
+  const frozen = p.txnSeqFrozen.find((f) => f.id === 'legacy.anwar@gmail.com');
+  ok(frozen, 'frozen entry missing');
+  ok(/legacy identity of Anwar \(held\)/.test(frozen.reason), 'reason must name the hold: ' + frozen.reason);
+  eq(p.summary.txnSeqFrozenCount, 1);
+});
+check('D-1: eligible students\u2019 own profiles and unmatched former profiles keep the normal backfill', () => {
+  const p = planLib.buildPlan(DFIX);
+  const ids = p.txnSeqBackfill.map((x) => x.id);
+  ok(ids.includes('bilal@students.jkss-fund.invalid'), 'eligible student profile must still be backfilled');
+  ok(ids.includes('former@gmail.com'), 'unmatched former profile keeps the existing backfill');
+  eq(p.frozenProfileIds.includes('former@gmail.com'), false, 'unmatched profiles are not frozen');
+});
+check('D-1: backfillTargets returns only the eligible ids and refuses a frozen id before any write', () => {
+  const p = planLib.buildPlan(DFIX);
+  eq(planLib.backfillTargets(p).slice().sort().join(','),
+     ['bilal@students.jkss-fund.invalid', 'former@gmail.com'].sort().join(','));
+  const bad = JSON.parse(JSON.stringify(p));
+  bad.txnSeqBackfill.push({ id: 'legacy.anwar@gmail.com', role: 'student' });
+  assertThrows(() => planLib.backfillTargets(bad), /refusing to backfill frozen/);
+});
+check('D-1: a roster hold freezes the held student\u2019s OWN profile too', () => {
+  const r = planLib.buildRoster({ students: [{ name: 'Bilal', hold: true, holdReason: 'under review' }] });
+  const p = planLib.buildPlan({ roster: r, live: DFIX.live });
+  const ids = p.txnSeqBackfill.map((x) => x.id);
+  ok(!ids.includes('bilal@students.jkss-fund.invalid'), 'held student profile must not be backfilled');
+  ok(p.frozenProfileIds.includes('bilal@students.jkss-fund.invalid'), 'and must be frozen');
+});
+check('D-1: ignoreLegacy does NOT unfreeze the legacy identity (it is never migrated)', () => {
+  const r = planLib.buildRoster({ students: [{ name: 'Anwar', ignoreLegacy: true }] });
+  const p = planLib.buildPlan({ roster: r, live: DFIX.live });
+  eq(p.students[0].createAllowed, true, 'ignoreLegacy student is created');
+  ok(!p.txnSeqBackfill.map((x) => x.id).includes('legacy.anwar@gmail.com'),
+     'the old legacy profile stays untouched even though a new identity is created');
+});
+check('D-1: an ambiguous (blocking) candidate profile is frozen', () => {
+  const twoProfiles = [
+    { id: 'm1@gmail.com', role: 'student', full_name: 'Muhsin Chelakkulam', balancePaise: 0, balance: 0 },
+    { id: 'm2@gmail.com', role: 'student', full_name: 'Muhsin Chelakkulam', balancePaise: 0, balance: 0 },
+  ];
+  const r = planLib.buildRoster({ students: [{ name: 'Muhsin Chelakkulam' }] });
+  const p = planLib.buildPlan({ roster: r, live: { authUsers: [], profiles: twoProfiles, jobs: [] } });
+  const ids = p.txnSeqBackfill.map((x) => x.id);
+  ok(!ids.includes('m1@gmail.com') && !ids.includes('m2@gmail.com'),
+     'contested candidates must not be backfilled while the ambiguity is open');
+});
+check('D-1: apply takes its backfill ids from backfillTargets, never from the raw plan list', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'provision.js'), 'utf8');
+  ok(src.includes('planLib.backfillTargets(plan)'), 'apply must derive ids from backfillTargets');
+  ok(!/backfillTxnSeq\(\{[^}]*plan\.txnSeqBackfill/.test(src), 'apply must not pass plan.txnSeqBackfill directly');
+});
+check('D-1: the rendered plan states the frozen profiles and their reason', () => {
+  const p = planLib.buildPlan(DFIX);
+  const text = require('../lib/report').renderPlan(p);
+  ok(text.includes('FROZEN'), 'frozen line missing');
+  ok(text.includes('legacy.anwar@gmail.com'), 'frozen id missing from the report');
+});
+
 check('plan: both admin documents are reported and preserved', () => {
   eq(plan.summary.adminProfiles, 2);
   eq(plan.adminProfiles.map((p) => p.id).join(','), 'thrikkakarajkss,thrikkakarajkss@gmail.com');

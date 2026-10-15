@@ -92,6 +92,9 @@ jobs:
       - name: Run provisioning planner tests
         working-directory: tools/provision
         run: node test/plan.test.js
+      - name: Run apply tests (decision D-1 - held legacy profiles are never backfilled)
+        working-directory: tools/provision
+        run: node test/apply.test.js
       - name: Run temporary-password / credentials-file tests
         working-directory: tools/provision
         run: node test/passwords.test.js

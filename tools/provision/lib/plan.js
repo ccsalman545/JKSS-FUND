@@ -391,9 +391,38 @@ function buildPlan({ roster, live = {}, projectId = null, domain = STUDENT_EMAIL
     .filter((p) => (p.role || 'student') === 'admin')
     .map((p) => summarizeProfile(p));
 
+  // ---- Frozen profiles (decision D-1): NEVER written by apply --------------
+  // A profile is FROZEN when it is:
+  //   * matched as the legacy identity of a roster student (legacyProfileId),
+  //     whether or not that student is being created;
+  //   * keyed by the assigned identifier of a student who is NOT being created
+  //     (held, or blocked for manual review);
+  //   * named in an ambiguous review (blocking candidate).
+  // Frozen profiles get no txnSeq:0 backfill and no other write. Everything else
+  // (eligible students' own profiles, unmatched former profiles) keeps the normal
+  // backfill. A held record is protected from this tool; it is not a rules-level
+  // freeze (see docs/USERNAME_LOGIN.md §8 step 6).
+  const frozenProfiles = new Map(); // profile id -> reason
+  students.forEach((e) => {
+    if (e.legacyProfileId) {
+      frozenProfiles.set(String(e.legacyProfileId),
+        'legacy identity of ' + e.name + (e.createAllowed ? '' : ' (held)'));
+    }
+    if (!e.createAllowed && profileById.has(String(e.identifier))) {
+      frozenProfiles.set(String(e.identifier), 'profile of held/blocked student ' + e.name);
+    }
+  });
+  blocking.forEach((b) => {
+    if (b.profileId) frozenProfiles.set(String(b.profileId), 'ambiguous match — manual review');
+    (b.candidates || []).forEach((c) => frozenProfiles.set(String(c.id), 'ambiguous match — manual review'));
+  });
+
   const txnSeqBackfill = (live.profiles || [])
-    .filter((p) => !Number.isInteger(p.txnSeq))
+    .filter((p) => !Number.isInteger(p.txnSeq) && !frozenProfiles.has(String(p.id)))
     .map((p) => ({ id: String(p.id), role: p.role || 'student', removed: !!p.removedAt }));
+  const txnSeqFrozen = (live.profiles || [])
+    .filter((p) => !Number.isInteger(p.txnSeq) && frozenProfiles.has(String(p.id)))
+    .map((p) => ({ id: String(p.id), reason: frozenProfiles.get(String(p.id)) }));
 
   const summary = {
     project: projectId,
@@ -410,6 +439,8 @@ function buildPlan({ roster, live = {}, projectId = null, domain = STUDENT_EMAIL
     toCreate: students.filter((s) => s.createAllowed).length,
     weakMatches: weak.length,
     txnSeqBackfillCount: txnSeqBackfill.length,
+    txnSeqFrozenCount: txnSeqFrozen.length,
+    frozenProfileCount: frozenProfiles.size,
     unmatchedProfiles: unmatched.map((p) => ({ id: String(p.id), role: p.role || 'student', balance: balancePaiseOf(p) })),
     liveJobs: (live.jobs || []).length,
     liveActiveJobs: (live.jobs || []).filter((j) => j.status !== 'reversed').length,
@@ -424,6 +455,8 @@ function buildPlan({ roster, live = {}, projectId = null, domain = STUDENT_EMAIL
     adminProfiles,
     unmatchedProfiles: summary.unmatchedProfiles,
     txnSeqBackfill,
+    txnSeqFrozen,
+    frozenProfileIds: [...frozenProfiles.keys()].sort(),
     summary,
     live: {
       authUserCount: (live.authUsers || []).length,
@@ -432,7 +465,20 @@ function buildPlan({ roster, live = {}, projectId = null, domain = STUDENT_EMAIL
   };
 }
 
+// The ONLY ids apply may pass to the txnSeq backfill. Throws (before any write)
+// if a frozen profile is ever present in the backfill list.
+function backfillTargets(plan) {
+  const frozen = new Set(plan.frozenProfileIds || []);
+  const ids = (plan.txnSeqBackfill || []).map((p) => String(p.id));
+  const bad = ids.filter((id) => frozen.has(id));
+  if (bad.length) {
+    throw new Error('refusing to backfill frozen (held) profiles: ' + bad.join(', '));
+  }
+  return ids;
+}
+
 module.exports = {
+  backfillTargets,
   SCORE,
   MATCH_THRESHOLD,
   WEAK_THRESHOLD,

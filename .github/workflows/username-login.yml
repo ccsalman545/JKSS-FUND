@@ -49,6 +49,9 @@ jobs:
       - name: Provisioning planner (roster, collisions, ambiguity, safety gates)
         working-directory: tools/provision
         run: node test/plan.test.js
+      - name: Apply never backfills or provisions held legacy profiles (decision D-1, stubbed Firebase)
+        working-directory: tools/provision
+        run: node test/apply.test.js
       - name: Temporary passwords + credentials file (CSPRNG, 0600, no overwrite)
         working-directory: tools/provision
         run: node test/passwords.test.js

@@ -243,6 +243,9 @@ async function cmdApply(flags) {
 
   const held = plan.students.filter((s) => !s.createAllowed);
   const actionable = plan.students.filter((s) => s.createAllowed);
+  // Decided BEFORE any write: the backfill may only touch non-frozen profiles
+  // (decision D-1). This throws, and nothing is written, if that is ever violated.
+  const backfillIds = planLib.backfillTargets(plan);
 
   const result = {
     dryRun,
@@ -322,12 +325,14 @@ async function cmdApply(flags) {
   }
 
   // ---- 4. txnSeq:0 backfill (only where missing) --------------------------
-  if (!dryRun && plan.txnSeqBackfill.length) {
-    const done = await fb.backfillTxnSeq({ db: handle.db, ids: plan.txnSeqBackfill.map((p) => p.id) });
+  // Frozen (held) profiles are excluded here and are never written.
+  if (!dryRun && backfillIds.length) {
+    const done = await fb.backfillTxnSeq({ db: handle.db, ids: backfillIds });
     done.forEach((d) => { if (d.set) result.backfills.applied += 1; else result.backfills.skipped += 1; });
   } else {
-    result.backfills.skipped = plan.txnSeqBackfill.length;
+    result.backfills.skipped = backfillIds.length;
   }
+  result.backfills.frozenExcluded = (plan.txnSeqFrozen || []).length;
 
   // ---- 5. Credentials + reports -------------------------------------------
   let writtenCredentials = null;
