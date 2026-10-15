@@ -283,9 +283,10 @@ const C = 'meta/committee';
 function seed() {
   mock.reset();
   mock.authUser = { email: ADMIN };
-  mock.docs.set('users/' + ADMIN, { email: ADMIN, role: 'admin', full_name: 'Admin', balancePaise: 0, balance: 0 });
+  // v3.5 protocol: every profile carries the withdrawal counter.
+  mock.docs.set('users/' + ADMIN, { email: ADMIN, role: 'admin', full_name: 'Admin', balancePaise: 0, balance: 0, txnSeq: 0 });
   S.forEach((e) => mock.docs.set('users/' + e, {
-    email: e, role: 'student', full_name: e[0].toUpperCase(), balancePaise: 0, balance: 0,
+    email: e, role: 'student', full_name: e[0].toUpperCase(), balancePaise: 0, balance: 0, txnSeq: 0,
   }));
   mock.docs.set(C, { balancePaise: 0, balance: 0 });
 }
@@ -347,7 +348,7 @@ let job1Id, job2Id;
   });
 
   await check('addJob ₹10.05 over 4 students → largest remainder (227,226,226,226)', async () => {
-    mock.docs.set('users/d@jkss.in', { email: 'd@jkss.in', role: 'student', full_name: 'D', balancePaise: 0, balance: 0 });
+    mock.docs.set('users/d@jkss.in', { email: 'd@jkss.in', role: 'student', full_name: 'D', balancePaise: 0, balance: 0, txnSeq: 0 });
     const roster = ['a@jkss.in', 'b@jkss.in', 'c@jkss.in', 'd@jkss.in'];
     const before = roster.map((e) => bal(e));
     await api.addJob('Uneven', 10.05, '2026-10-04');

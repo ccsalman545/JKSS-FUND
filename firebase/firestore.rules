@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// JKSS-FUND v3.4 — least-privilege Firestore rules (paise-exact).
+// JKSS-FUND v3.5 — least-privilege Firestore rules (paise-exact).
 //
 // LANGUAGE CONSTRAINTS (verified against the production rules compiler):
 //  * NO lambda/filter/map over collections; NO if-statements (a function
@@ -8,58 +8,78 @@ rules_version = '2';
 //    are ternaries and &&/|| short-circuits).
 //  * NO string indexOf/startsWith; NO sum(); NO bare round (math.round);
 //    NO 'number' type (int/float only).
-//  * map[key] on a missing key is an ERROR — use map.get(key, default)
-//    or guard with an `is` check first.
+//  * A field access on a missing field evaluates to an UNDEFINED value
+//    that PROPAGATES (denies the rule) through every operator — including
+//    `is` (a call with an UNDEFINED argument yields UNDEFINED). There is
+//    NO safe "does field exist" probe: guard by structure instead (the
+//    app always writes the fields the rules read; a missing one = deny).
 //  * get()/getAfter() take a PATH TEMPLATE whose $(...) captures may ONLY
 //    be simple variable references (wildcards, function parameters, let
-//    bindings) — a complex expression like $(request.auth.token.email)
-//    evaluates to a plain string and get() rejects it at runtime.
-//  * A request (including every write in an atomic batch) shares a budget
-//    of 1000 expression evaluations, so helpers stay small and checks are
-//    ordered to short-circuit cheaply.
+//    bindings). Build dynamic IDs in a `let` first, then capture it.
+//  * request.writes DOES NOT EXIST in Firestore rules. Cross-write
+//    consistency of an atomic batch is proved with:
+//      - get()      = pre-batch state
+//      - getAfter() = FINAL post-batch state (sees every write in the batch)
+//    plus canonical (deterministic) document IDs so each write can be
+//    addressed exactly, and pre-existence checks (get(...).exists == false)
+//    so a document "created" by the batch is genuinely new — not a replay.
+//  * A request (including every write in a batch) shares a budget of 1000
+//    expression evaluations, so helpers stay small and checks are ordered
+//    to short-circuit cheaply.
 //
-// ADMIN TRUST ROOT (two tiers, no escalation possible either way):
-//  1. Fast path: the `admin` custom auth claim (granted once, out of
-//     band, via the Firebase console or Admin SDK).
-//  2. Fallback: a users/{email} doc with role 'admin'. Role is created
-//     only (by an admin or the console) and can never be updated, so the
-//     admin set can only grow through the two create rules below.
+// ADMIN TRUST ROOT: a users/{email} doc with role 'admin'. Role is created
+// only (by an admin or the console, at create-time) and can never be
+// updated, so the admin set can only grow through the two create rules.
+//
+// CANONICAL IDS (replay/ledger integrity):
+//  * earning txn:    earn_{jobId}_{email}
+//  * reversal txn:   rev_{jobId}_{email}
+//  * withdrawal txn: w_{email}_{txnSeq}   where txnSeq is the per-user
+//    monotonically increasing counter on the user doc (0 for legacy docs,
+//    bumped by exactly 1 in the withdrawal user write).
 //
 // BATCH PROTOCOL (what the app sends, what the rules prove):
-//   withdrawal (self, exactly 2 writes):
-//     users/{me} update            +  users/{me}/transactions/{any} set
+//   withdrawal (self, 2 writes):
+//     users/{me} update  {balancePaise, balance, txnSeq: oldSeq+1}
+//     users/{me}/transactions/w_{me}_{oldSeq+1} set (withdrawal)
+//     - user rule: final >= 0, delta > 0, seq bumped by exactly 1, and the
+//       canonical txn is NEW in the batch (get: absent / getAfter: present)
+//       with amount == the live delta (checked on the txn side).
+//     - txn rule: final user balance (getAfter) == pre-balance - amount,
+//       final >= 0, and the ID is canonical for the post-batch seq.
 //   job credit (admin):
-//     jobs/{id} set                +  users/{e} update (per non-zero alloc)
-//     users/{e}/transactions/earn_{id}_{e} set (per non-zero alloc)
-//     meta/committee update        (carries lastJobId = id)
+//     jobs/{id} set (shape-validated, allocations map {email: paise})
+//     users/{e} update  {balancePaise, balance, creditJobId: id}
+//     users/{e}/transactions/earn_{id}_{e} set
+//     meta/committee update {balancePaise, balance, lastJobId: id}
+//     - user rule: the job and the canonical earning txn must be NEW in the
+//       batch (get: absent / getAfter: present), and the credit delta must
+//       equal the job's stored allocation for this student.
+//     - committee rule: the job must be NEW in the batch and the committee
+//       delta must equal exactly the job's 10% committee share.
 //   job reversal (admin):
-//     jobs/{id} update -> status 'reversed' + reversedAt   (tombstone,
+//     jobs/{id} update -> {status: 'reversed', reversedAt} (tombstone,
 //     never a delete — the original allocation history stays auditable)
-//     users/{e} update (per ORIGINAL allocation)
+//     users/{e} update  {balancePaise, balance, reversalJobId: id}
 //     users/{e}/transactions/rev_{id}_{e} set
-//     meta/committee update        (carries reversedJobId = id)
-//
-// The committee write at the EXACT key /meta/committee is the batch's job
-// reference: any rule in the batch can read its lastJobId / reversedJobId
-// field and address the job write and canonical txn keys without iterating
-// over unknown paths. Per-write checks (each student's delta equals their
-// stored allocation; the canonical txn amount equals the same delta) plus
-// the job-level getAfter() committee checks make every committed batch
-// financially consistent; a batch is all-or-nothing, so there is no
-// partially applied state.
+//     meta/committee update {balancePaise, balance, reversedJobId: id}
+//     - user rule: the debit must equal the ORIGINAL stored allocation
+//       (pre-batch job doc — immune to the status-only update in the batch);
+//       removed students may end negative, active students may not.
+//     - committee rule: the committee must be credited back by exactly the
+//       ORIGINAL committee share.
+//   A batch is all-or-nothing, so every committed batch is fully consistent;
+//   replayed batches fail on the "new in batch" checks or on zero deltas.
 //
 // MONEY MODEL:
-//   - Integer PAISE (balancePaise / amountPaise) is authoritative; the
-//     rupee floats are display mirrors, never used in checks.
-//   - Jobs store 10% committee (floored paise) / 90% students exactly;
-//     allocations are a MAP {email: amountPaise}, every value `base` or
-//     `base+1` (base = studentSharePaise / studentCount).
-//   - Balances are written as EXPLICIT FINAL VALUES (never server
-//     increments): rules compute deltas against the live document, so a
-//     stale/duplicate/double-spend write is rejected.
-//   - User docs must carry an integer balancePaise (migrate legacy
-//     rupee-only docs once before the first job credit); students may
-//     never create or modify the `admin` role; removal is a tombstone.
+//  - Integer PAISE (balancePaise / amountPaise) is authoritative; the
+//    rupee floats are display mirrors, never used in checks.
+//  - Jobs store 10% committee (floored paise) / 90% students exactly;
+//    allocations are a MAP {email: amountPaise}, every value `base` or
+//    `base+1` (base = studentSharePaise / studentCount).
+//  - Balances are written as EXPLICIT FINAL VALUES (never server
+//    increments): rules compute deltas against the live (pre-batch)
+//    document, which is what makes replays and double-spends impossible.
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -71,20 +91,15 @@ service cloud.firestore {
     }
 
     // Simple-variable-only path capture: the email arrives as a parameter.
-    // (Missing fields evaluate to UNDEFINED: `is` returns false for it,
-    //  comparisons propagate it — so every optional read is is-guarded.)
     function adminDocRole(email) {
       let d = get('/databases/$(database)/documents/users/$(email)');
-      return d.exists && d.data.role is string && d.data.role == 'admin';
+      return d.exists && d.data.role == 'admin';
     }
 
     function isAdmin() {
       return request.auth != null
-        && (
-          (request.auth.token.admin is bool && request.auth.token.admin == true)
-          || (request.auth.token.email is string
-              && adminDocRole(request.auth.token.email))
-        );
+        && request.auth.token.email is string
+        && adminDocRole(request.auth.token.email);
     }
 
     function isSelf(email) {
@@ -98,28 +113,11 @@ service cloud.firestore {
       return d.balancePaise is int ? d.balancePaise : math.round(d.balance * 100);
     }
 
-    // Only the balance fields may have changed in a financial update.
-    function balanceFieldsOnly() {
-      return request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['balance', 'balancePaise']);
-    }
-
-    function committeeOld() {
-      let d = get('/databases/$(database)/documents/meta/committee');
-      return d.exists ? d.data : null;
-    }
-
-    function committeeNew() {
-      let d = getAfter('/databases/$(database)/documents/meta/committee');
-      return d.exists ? d.data : null;
-    }
-
-    // Original allocation stored on a job (pre-batch read).
-    function jobAlloc(jobId, email) {
-      let d = get('/databases/$(database)/documents/jobs/$(jobId)');
-      let a = d.exists ? d.data.allocations : null;
-      return a is map ? a.get(email, null) : null;
-    }
+    // NOTE: a field access on a MISSING field evaluates to an UNDEFINED
+    // value that propagates (denies the rule) through every operator.
+    // The app therefore ALWAYS writes creditJobId/reversalJobId (one of
+    // them null) and txnSeq on every financial user write — a null value
+    // is readable, a missing one is not.
 
     /* ------------------------------- /users ----------------------------- */
 
@@ -130,35 +128,108 @@ service cloud.firestore {
                .hasOnly(['full_name', 'avatar', 'lastActiveAt']);
       }
 
-      // The batch must be EXACTLY this user update + one txn under
-      // users/{me}/transactions, and the final (post-write) paise balance
-      // must be non-negative with the txn amount matching the reduction.
-      // The delta is computed against the LIVE document, so replaying a
-      // stale batch (double spend) yields delta 0 and is rejected.
-      function withdrawalBatchOk() {
+      // Self withdrawal: final >= 0, positive delta, ONLY the balance fields
+      // plus the seq bump, seq advanced by exactly 1, and the canonical
+      // withdrawal txn w_{email}_{newSeq} must be NEW in this batch.
+      // (Checked AFTER selfProfileOk in the allow rule so profile updates
+      // never touch these reads.)
+      function withdrawalOk() {
         let newPaise = request.resource.data.balancePaise;
+        let newSeq = request.resource.data.txnSeq;
+        let oldSeq = resource.data.txnSeq;
         let delta = paiseOf(resource.data) - newPaise;
-        let other = request.writes.keys().removeAll(['users/' + email]);
-        let okKey = other.size() == 1 ? other[0] : '';
-        let segs = okKey == '' ? [] : okKey.split('/');
-        let tw = okKey == '' ? null : request.writes.get(okKey, null);
-        let t = tw == null ? null : tw.resource.data;
-        return request.writes.size() == 2
-          && newPaise is int
+        let tid = newSeq is int ? 'w_' + email + '_' + toString(newSeq) : null;
+        let tPre = tid == null ? null : get('/databases/$(database)/documents/users/$(email)/transactions/$(tid)');
+        let tAfter = tid == null ? null : getAfter('/databases/$(database)/documents/users/$(email)/transactions/$(tid)');
+        return newPaise is int
           && newPaise >= 0
+          && oldSeq is int
+          && newSeq is int
+          && newSeq == oldSeq + 1
           && delta > 0
-          && balanceFieldsOnly()
-          && segs.size() == 4
-          && segs[0] == 'users'
-          && segs[1] == email
-          && segs[2] == 'transactions'
-          && tw != null
-          && tw.method == 'set'
-          && t != null
-          && t.type == 'withdrawal'
-          && t.studentId == email
-          && t.amountPaise is int
-          && t.amountPaise == delta;
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['balance', 'balancePaise', 'txnSeq'])
+          && tPre != null
+          && tPre.exists == false
+          && tAfter != null
+          && tAfter.exists;
+      }
+
+      // Admin job credit: the user write carries creditJobId; the job and
+      // the canonical earning txn must be NEW in this batch, and the credit
+      // delta must equal the job's stored allocation for this student.
+      function jobCreditOk() {
+        let newPaise = request.resource.data.balancePaise;
+        let jid = request.resource.data.creditJobId;
+        let delta = newPaise - paiseOf(resource.data);
+        let tid = jid is string ? 'earn_' + jid + '_' + email : null;
+        let jPre = jid is string ? get('/databases/$(database)/documents/jobs/$(jid)') : null;
+        let jAfter = jid is string ? getAfter('/databases/$(database)/documents/jobs/$(jid)') : null;
+        let tPre = tid == null ? null : get('/databases/$(database)/documents/users/$(email)/transactions/$(tid)');
+        let tAfter = tid == null ? null : getAfter('/databases/$(database)/documents/users/$(email)/transactions/$(tid)');
+        let tData = (tAfter != null && tAfter.exists) ? tAfter.data : null;
+        return newPaise is int
+          && newPaise >= 0
+          && jid is string
+          && delta > 0
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['balance', 'balancePaise', 'creditJobId', 'reversalJobId'])
+          && jPre != null
+          && jPre.exists == false
+          && jAfter != null
+          && jAfter.exists
+          && jAfter.data.allocations is map
+          && jAfter.data.allocations.get(email, null) is int
+          && jAfter.data.allocations.get(email, null) == delta
+          && tPre != null
+          && tPre.exists == false
+          && tAfter != null
+          && tAfter.exists
+          && tData != null
+          && tData.type == 'earning'
+          && tData.studentId == email
+          && tData.jobId == jid
+          && tData.amountPaise == delta;
+      }
+
+      // Admin job reversal: debit equals the ORIGINAL stored allocation
+      // (pre-batch job doc — immune to the status-only update in the batch);
+      // the rev txn must be NEW in the batch; removed students may end
+      // negative (standing liability), active students may not.
+      function jobReversalOk() {
+        let newPaise = request.resource.data.balancePaise;
+        let jid = request.resource.data.reversalJobId;
+        let delta = paiseOf(resource.data) - newPaise;
+        let tid = jid is string ? 'rev_' + jid + '_' + email : null;
+        let j = jid is string ? get('/databases/$(database)/documents/jobs/$(jid)') : null;
+        let jAfter = jid is string ? getAfter('/databases/$(database)/documents/jobs/$(jid)') : null;
+        let tPre = tid == null ? null : get('/databases/$(database)/documents/users/$(email)/transactions/$(tid)');
+        let tAfter = tid == null ? null : getAfter('/databases/$(database)/documents/users/$(email)/transactions/$(tid)');
+        let tData = (tAfter != null && tAfter.exists) ? tAfter.data : null;
+        return newPaise is int
+          && delta > 0
+          && jid is string
+          && !(newPaise < 0 && resource.data.removedAt == null)
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['balance', 'balancePaise', 'creditJobId', 'reversalJobId'])
+          && j != null
+          && j.exists
+          && j.data.status == 'active'
+          && jAfter != null
+          && jAfter.exists
+          && jAfter.data.status == 'reversed'
+          && j.data.allocations is map
+          && j.data.allocations.get(email, null) is int
+          && j.data.allocations.get(email, null) == delta
+          && tPre != null
+          && tPre.exists == false
+          && tAfter != null
+          && tAfter.exists
+          && tData != null
+          && tData.type == 'reversal'
+          && tData.studentId == email
+          && tData.jobId == jid
+          && tData.amountPaise == delta;
       }
 
       function adminMaintenanceOk() {
@@ -166,85 +237,20 @@ service cloud.firestore {
                .hasOnly(['full_name', 'avatar', 'lastActiveAt', 'removedAt']);
       }
 
-      // The credit equals this student's stored allocation in the new job,
-      // the canonical earning txn is present, and the committee update in
-      // the batch references exactly that job.
-      function jobCreditOk() {
-        let newPaise = request.resource.data.balancePaise;
-        let delta = newPaise - resource.data.balancePaise;
-        let c = request.writes.get('meta/committee', null);
-        let jobId = (c != null && c.method == 'update' && c.resource.data.lastJobId is string) ? c.resource.data.lastJobId : null;
-        let jw = jobId == null ? null : request.writes.get('jobs/' + jobId, null);
-        let allocs = (jw != null && jw.method == 'set' && jw.resource.data.allocations is map) ? jw.resource.data.allocations : null;
-        let mine = allocs == null ? null : allocs.get(email, null);
-        let t = jobId == null ? null : request.writes.get('users/' + email + '/transactions/earn_' + jobId + '_' + email, null);
-        let tData = (t != null && t.method == 'set') ? t.resource.data : null;
-        return newPaise is int
-          && resource.data.balancePaise is int
-          && delta > 0
-          && balanceFieldsOnly()
-          && c != null
-          && c.method == 'update'
-          && jobId != null
-          && jw != null
-          && jw.method == 'set'
-          && allocs != null
-          && mine is int
-          && mine == delta
-          && tData != null
-          && tData.type == 'earning'
-          && tData.studentId == email
-          && tData.jobId == jobId
-          && tData.amountPaise == delta;
-      }
-
-      // Debit equals the ORIGINAL stored allocation (pre-batch read —
-      // immune to the status-only job update in the same batch). Removed
-      // students may end negative (standing liability); active students
-      // may not.
-      function jobReversalOk() {
-        let newPaise = request.resource.data.balancePaise;
-        let delta = resource.data.balancePaise - newPaise;
-        let c = request.writes.get('meta/committee', null);
-        let jobId = (c != null && c.method == 'update' && c.resource.data.reversedJobId is string) ? c.resource.data.reversedJobId : null;
-        let jw = jobId == null ? null : request.writes.get('jobs/' + jobId, null);
-        let mine = jobId == null ? null : jobAlloc(jobId, email);
-        let t = jobId == null ? null : request.writes.get('users/' + email + '/transactions/rev_' + jobId + '_' + email, null);
-        let tData = (t != null && t.method == 'set') ? t.resource.data : null;
-        return newPaise is int
-          && resource.data.balancePaise is int
-          && delta > 0
-          && !(newPaise < 0 && resource.data.removedAt == null)
-          && balanceFieldsOnly()
-          && c != null
-          && c.method == 'update'
-          && jobId != null
-          && jw != null
-          && jw.method == 'update'
-          && mine is int
-          && mine == delta
-          && tData != null
-          && tData.type == 'reversal'
-          && tData.studentId == email
-          && tData.jobId == jobId
-          && tData.amountPaise == delta;
-      }
-
-      // New profile (first sign-in or admin pre-registration).
+      // New profile (first sign-in or admin pre-registration). txnSeq is
+      // the per-user withdrawal counter, always initialized to 0.
       function newProfileOk(role) {
         let d = request.resource.data;
         return d.email == email
           && d.role == role
           && d.balancePaise == 0
           && d.balance == 0
+          && d.txnSeq == 0
           && d.keys().hasOnly(['email', 'role', 'full_name', 'avatar',
-                                'balancePaise', 'balance', 'createdAt']);
+                                'balancePaise', 'balance', 'txnSeq', 'createdAt']);
       }
 
       allow get: if isSelf(email) || isAdmin();
-
-      // Only admins may list students. (The wildcard is unbound during a
-      // list; per-document visibility is enforced by the get rule.)
       allow list: if isAdmin();
 
       /* First sign-in self-provisioning: always student, zero balances,
@@ -253,16 +259,18 @@ service cloud.firestore {
 
       /* Admins provision students and may grant the admin role on create.
          Granting/modifying an existing user's role is impossible — the
-         update rules below never allow role/email/balance changes. */
+         update rules below never allow role/email changes. */
       allow create: if isAdmin() && (newProfileOk('student') || newProfileOk('admin'));
 
-      // Self: atomic withdrawal pair, or plain profile fields.
-      allow update: if isSelf(email) && (withdrawalBatchOk() || selfProfileOk());
+      // Self: atomic withdrawal pair (user + canonical txn), or profile.
+      // Profile is checked first so profile updates never reach the
+      // withdrawal reads (a missing optional field would otherwise deny).
+      allow update: if isSelf(email) && (selfProfileOk() || withdrawalOk());
 
-      // Admin: the three verified batch roles, cheapest failure first is
-      // not possible per-role, but each is cheap to reject when the batch
-      // shape doesn't match (committee write missing, etc.).
-      allow update: if isAdmin() && (jobCreditOk() || jobReversalOk() || adminMaintenanceOk());
+      // Admin: plain roster maintenance first, then the verified batch
+      // roles (each reads optional fields, so they must not run for
+      // maintenance writes).
+      allow update: if isAdmin() && (adminMaintenanceOk() || jobCreditOk() || jobReversalOk());
 
       // Hard delete is denied for everyone: removal is a tombstone update
       // (removedAt) so historical allocations remain reversible.
@@ -276,38 +284,81 @@ service cloud.firestore {
       allow get: if isSelf(email) || isAdmin();
       allow list: if isSelf(email) || isAdmin();
 
-      // Withdrawal txn shape. The amount==live-delta and non-negative
-      // final-balance guarantees live on the companion users/{email}
-      // update (withdrawalBatchOk) — both writes are in one atomic batch,
-      // so the pair is consistent or the whole batch is rejected.
-      function withdrawalTxnShapeOk() {
+      // Withdrawal txn: the FINAL user state after this batch must equal
+      // the pre-balance minus exactly this amount (>= 0), and the ID must
+      // be canonical for the post-batch seq. This ties the txn to the
+      // companion balance write without request.writes.
+      function withdrawalTxnOk() {
         let t = request.resource.data;
-        return request.writes.size() == 2
-          && t.type == 'withdrawal'
+        let u = get('/databases/$(database)/documents/users/$(email)');
+        let uAfter = getAfter('/databases/$(database)/documents/users/$(email)');
+        let finalPaise = uAfter.exists ? uAfter.data.balancePaise : null;
+        let canon = 'w_' + email + '_' + toString(uAfter.exists ? uAfter.data.txnSeq : -1);
+        return t.type == 'withdrawal'
           && t.studentId == email
           && t.amountPaise is int
           && t.amountPaise > 0
           && t.amount != null
-          && t.amount > 0;
+          && t.amount > 0
+          && u.exists
+          && uAfter.exists
+          && finalPaise is int
+          && finalPaise >= 0
+          && finalPaise == paiseOf(u.data) - t.amountPaise
+          && txnId == canon;
       }
 
-      // Job txn shape with the canonical ID (earn_{jobId}_{email} or
-      // rev_{jobId}_{email}). The per-student amount==allocation proof is
-      // enforced on the companion users/{email} update in the same batch.
-      function jobTxnShapeOk() {
+      // Earning txn: canonical ID; the job must be NEW in this batch
+      // (get: absent / getAfter: present) and store this student's
+      // allocation at exactly this amount.
+      function earningTxnOk() {
         let t = request.resource.data;
         let jid = t.jobId is string ? t.jobId : null;
-        return jid != null
+        let jPre = jid == null ? null : get('/databases/$(database)/documents/jobs/$(jid)');
+        let jAfter = jid == null ? null : getAfter('/databases/$(database)/documents/jobs/$(jid)');
+        let a = (jAfter != null && jAfter.exists && jAfter.data.allocations is map) ? jAfter.data.allocations.get(email, null) : null;
+        return t.type == 'earning'
           && t.studentId == email
+          && jid != null
           && t.amountPaise is int
           && t.amountPaise > 0
-          && ((t.type == 'earning' && txnId == 'earn_' + jid + '_' + email)
-              || (t.type == 'reversal' && txnId == 'rev_' + jid + '_' + email));
+          && txnId == 'earn_' + jid + '_' + email
+          && jPre != null
+          && jPre.exists == false
+          && jAfter != null
+          && jAfter.exists
+          && a is int
+          && a == t.amountPaise;
       }
 
-      // Ledger entries are immutable: only the verified creations.
-      allow create: if (isSelf(email) && withdrawalTxnShapeOk())
-                   || (isAdmin() && jobTxnShapeOk());
+      // Reversal txn: canonical ID; the ORIGINAL (pre-batch) job must
+      // store this student's allocation at exactly this amount, and the
+      // job must be tombstoned within this same batch.
+      function reversalTxnOk() {
+        let t = request.resource.data;
+        let jid = t.jobId is string ? t.jobId : null;
+        let j = jid == null ? null : get('/databases/$(database)/documents/jobs/$(jid)');
+        let jAfter = jid == null ? null : getAfter('/databases/$(database)/documents/jobs/$(jid)');
+        let a = (j != null && j.exists && j.data.allocations is map) ? j.data.allocations.get(email, null) : null;
+        return t.type == 'reversal'
+          && t.studentId == email
+          && jid != null
+          && t.amountPaise is int
+          && t.amountPaise > 0
+          && txnId == 'rev_' + jid + '_' + email
+          && j != null
+          && j.exists
+          && j.data.status == 'active'
+          && jAfter != null
+          && jAfter.exists
+          && jAfter.data.status == 'reversed'
+          && a is int
+          && a == t.amountPaise;
+      }
+
+      // Ledger entries are immutable: only the three verified creations.
+      allow create: if (isSelf(email) && withdrawalTxnOk())
+                   || (isAdmin() && (earningTxnOk() || reversalTxnOk()));
 
       allow update: if false;
       allow delete: if false;
@@ -346,60 +397,59 @@ service cloud.firestore {
           && d.allocations.values().hasOnly([base, base + 1]);
       }
 
-      // The credit batch must carry the committee update that references
-      // exactly this job, and the FINAL committee state (atomic write,
-      // getAfter) must have grown by exactly the committee share.
-      function jobCreditBatchOk(d) {
-        let c = request.writes.get('meta/committee', null);
-        let cOld = committeeOld();
-        let cNew = committeeNew();
-        return c != null
-          && c.method == 'update'
-          && c.resource.data.lastJobId == jobId
-          && cOld != null
-          && cNew != null
-          && cNew.balancePaise is int
-          && cNew.balancePaise >= 0
-          && cNew.balancePaise - paiseOf(cOld) == d.committeeSharePaise;
+      // The committee must be credited by EXACTLY the job's share within
+      // this same batch (final state via getAfter — a batch without the
+      // committee write shows delta 0 and is rejected).
+      function jobCommitteeCredited(d) {
+        let cOld = get('/databases/$(database)/documents/meta/committee');
+        let cAfter = getAfter('/databases/$(database)/documents/meta/committee');
+        return cOld.exists
+          && cAfter.exists
+          && cAfter.data.balancePaise is int
+          && cAfter.data.balancePaise >= 0
+          && cAfter.data.balancePaise - paiseOf(cOld.data) == d.committeeSharePaise;
       }
 
       allow create: if isAdmin()
         && jobShapeOk(request.resource.data)
-        && jobCreditBatchOk(request.resource.data);
+        && jobCommitteeCredited(request.resource.data);
 
       // Status flag toggling (active/archived) — the only plain update.
+      // The status must actually CHANGE (an identical no-op write — e.g. a
+      // replayed batch — has an empty diff and would otherwise pass).
       function statusToggleOk() {
-        return request.resource.data.diff(resource.data).affectedKeys()
+        return request.resource.data.status != resource.data.status
+          && request.resource.data.diff(resource.data).affectedKeys()
                .hasOnly(['status'])
           && request.resource.data.status in ['active', 'archived'];
       }
 
       // Reversal = tombstone (status 'reversed' + reversedAt), never a
       // delete: the original allocation history stays readable for audit.
-      // The batch must credit the committee back by exactly the ORIGINAL
-      // committee share (final state via getAfter).
       function reversalJobOk() {
-        let c = request.writes.get('meta/committee', null);
-        let cOld = committeeOld();
-        let cNew = committeeNew();
         let changed = request.resource.data.diff(resource.data).affectedKeys();
         return resource.data.allocations is map
           && resource.data.allocations.size() > 0
           && resource.data.committeeSharePaise is int
           && resource.data.status != 'reversed'
           && request.resource.data.status == 'reversed'
-          && changed.hasOnly(['status', 'reversedAt'])
-          && c != null
-          && c.method == 'update'
-          && c.resource.data.reversedJobId == jobId
-          && cOld != null
-          && cNew != null
-          && cNew.balancePaise is int
-          && cNew.balancePaise >= 0
-          && paiseOf(cOld) - cNew.balancePaise == resource.data.committeeSharePaise;
+          && changed.hasOnly(['status', 'reversedAt']);
       }
 
-      allow update: if isAdmin() && (statusToggleOk() || reversalJobOk());
+      // The committee must be credited back by EXACTLY the original share
+      // within this same batch.
+      function reversalCommitteeReturned() {
+        let cOld = get('/databases/$(database)/documents/meta/committee');
+        let cAfter = getAfter('/databases/$(database)/documents/meta/committee');
+        return cOld.exists
+          && cAfter.exists
+          && cAfter.data.balancePaise is int
+          && cAfter.data.balancePaise >= 0
+          && paiseOf(cOld.data) - cAfter.data.balancePaise == resource.data.committeeSharePaise;
+      }
+
+      allow update: if isAdmin() && (statusToggleOk()
+        || (reversalJobOk() && reversalCommitteeReturned()));
 
       // Jobs are never deleted (audit history). Use the reversal tombstone.
       allow delete: if false;
@@ -418,30 +468,52 @@ service cloud.firestore {
         && request.resource.data.balance == 0
         && request.resource.data.keys().hasOnly(['balancePaise', 'balance']);
 
-      // Real changes only inside a job batch, by an admin. The job write
-      // must be present at the exact key the committee doc references.
-      // (The amount deltas are validated by the /jobs rules via getAfter.)
-      function inCreditBatch() {
+      // Credit: the referenced job must be NEW in this batch (created by
+      // it) and the committee delta must equal exactly the job's share.
+      function creditOk() {
         let c = request.resource.data;
         let jid = c.lastJobId is string ? c.lastJobId : null;
-        let jw = jid == null ? null : request.writes.get('jobs/' + jid, null);
+        let jPre = jid == null ? null : get('/databases/$(database)/documents/jobs/$(jid)');
+        let jAfter = jid == null ? null : getAfter('/databases/$(database)/documents/jobs/$(jid)');
+        let cOld = get('/databases/$(database)/documents/meta/committee');
         return jid != null
-          && jid != ''
-          && jw != null
-          && jw.method == 'set';
+          && jPre != null
+          && jPre.exists == false
+          && jAfter != null
+          && jAfter.exists
+          && jAfter.data.amountPaise is int
+          && jAfter.data.committeeSharePaise is int
+          && jAfter.data.committeeSharePaise == jAfter.data.amountPaise / 10
+          && cOld.exists
+          && c.balancePaise is int
+          && c.balancePaise >= 0
+          && c.balancePaise - paiseOf(cOld.data) == jAfter.data.committeeSharePaise;
       }
 
-      function inReversalBatch() {
+      // Reversal credit-back: the referenced job exists (pre-batch) and the
+      // committee must drop by exactly its ORIGINAL share, staying >= 0.
+      function reversalCreditOk() {
         let c = request.resource.data;
         let jid = c.reversedJobId is string ? c.reversedJobId : null;
-        let jw = jid == null ? null : request.writes.get('jobs/' + jid, null);
+        let j = jid == null ? null : get('/databases/$(database)/documents/jobs/$(jid)');
+        let jAfter = jid == null ? null : getAfter('/databases/$(database)/documents/jobs/$(jid)');
+        let cOld = get('/databases/$(database)/documents/meta/committee');
         return jid != null
-          && jid != ''
-          && jw != null
-          && jw.method == 'update';
+          && j != null
+          && j.exists
+          && j.data.status == 'active'
+          && jAfter != null
+          && jAfter.exists
+          && jAfter.data.status == 'reversed'
+          && j.data.amountPaise is int
+          && j.data.committeeSharePaise is int
+          && cOld.exists
+          && c.balancePaise is int
+          && c.balancePaise >= 0
+          && paiseOf(cOld.data) - c.balancePaise == j.data.committeeSharePaise;
       }
 
-      allow update: if isAdmin() && (inCreditBatch() || inReversalBatch());
+      allow update: if isAdmin() && (creditOk() || reversalCreditOk());
 
       allow delete: if false;
     }

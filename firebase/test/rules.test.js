@@ -1,5 +1,5 @@
 // test/rules.test.js
-// Firestore SECURITY RULES test suite for JKSS-FUND v3.2.
+// Firestore SECURITY RULES test suite for JKSS-FUND v3.5.
 //
 // Runs the DEPLOYED rules (firebase/firestore.rules) inside the real
 // Firestore emulator (production rules engine) via the official
@@ -51,13 +51,13 @@ async function seed() {
   await env.withSecurityRulesDisabled(async (ctx) => {
     const db = ctx.firestore();
     await setDoc(doc(db, 'users/' + ADMIN), {
-      email: ADMIN, role: 'admin', full_name: 'Admin', balancePaise: 0, balance: 0,
+      email: ADMIN, role: 'admin', full_name: 'Admin', balancePaise: 0, balance: 0, txnSeq: 0,
     });
     await setDoc(doc(db, 'users/' + A), {
-      email: A, role: 'student', full_name: 'A', balancePaise: 5000, balance: 50,
+      email: A, role: 'student', full_name: 'A', balancePaise: 5000, balance: 50, txnSeq: 0,
     });
     await setDoc(doc(db, 'users/' + B), {
-      email: B, role: 'student', full_name: 'B', balancePaise: 4000, balance: 40,
+      email: B, role: 'student', full_name: 'B', balancePaise: 4000, balance: 40, txnSeq: 0,
     });
     await setDoc(doc(db, 'meta/committee'), { balancePaise: 1000, balance: 10 });
     // Pre-v3.1 top-level ledger entry (audit-only path).
@@ -91,7 +91,12 @@ function jobCreditBatch(db, jobId, amountPaise, allocs, current, {
   }, jobData));
   Object.entries(allocs).forEach(([email, amount]) => {
     const final = userFinal[email] != null ? userFinal[email] : current[email] + amount;
-    b.update(doc(db, 'users/' + email), { balancePaise: final, balance: final / 100 });
+    // v3.5 protocol: the user write carries the job reference (and always
+    // both fields — the rules cannot read missing fields, but null is fine).
+    b.update(doc(db, 'users/' + email), {
+      balancePaise: final, balance: final / 100,
+      creditJobId: jobId, reversalJobId: null,
+    });
     if (omitTxnFor !== email) {
       b.set(doc(db, 'users/' + email + '/transactions/earn_' + jobId + '_' + email), {
         type: 'earning', studentId: email, jobId,
@@ -121,7 +126,11 @@ function jobReversalBatch(db, jobId, allocs, current, {
   Object.entries(allocs).forEach(([email, amount]) => {
     let final = current[email] - amount;
     if (wrongUserFinalFor === email) final = current[email] - amount + 100;
-    b.update(doc(db, 'users/' + email), { balancePaise: final, balance: final / 100 });
+    // v3.5 protocol: the user write carries the job reference.
+    b.update(doc(db, 'users/' + email), {
+      balancePaise: final, balance: final / 100,
+      creditJobId: null, reversalJobId: jobId,
+    });
     b.set(doc(db, 'users/' + email + '/transactions/rev_' + jobId + '_' + email), {
       type: 'reversal', studentId: email, jobId,
       amountPaise: amount, amount: amount / 100,
@@ -189,7 +198,7 @@ test('unauthenticated: cannot read committee balance', async () => {
 test('unauthenticated: cannot create a profile (even with zero balances)', async () => {
   const db = anonCtx().firestore();
   await assertFails(setDoc(doc(db, 'users/' + C), {
-    email: C, role: 'student', full_name: 'C', balancePaise: 0, balance: 0,
+    email: C, role: 'student', full_name: 'C', balancePaise: 0, balance: 0, txnSeq: 0,
   }));
 });
 test('unauthenticated: cannot create a job', async () => {
@@ -213,31 +222,31 @@ test('unauthenticated: cannot write unknown paths (no catch-all)', async () => {
 test('student: can self-create profile (student role, zero balances) on first sign-in', async () => {
   const db = authed(C).firestore();
   await assertSucceeds(setDoc(doc(db, 'users/' + C), {
-    email: C, role: 'student', full_name: 'C', balancePaise: 0, balance: 0,
+    email: C, role: 'student', full_name: 'C', balancePaise: 0, balance: 0, txnSeq: 0,
   }));
 });
 test('student: CANNOT self-create profile with role admin (no self-elevation)', async () => {
   const db = authed(C).firestore();
   await assertFails(setDoc(doc(db, 'users/' + C), {
-    email: C, role: 'admin', full_name: 'C', balancePaise: 0, balance: 0,
+    email: C, role: 'admin', full_name: 'C', balancePaise: 0, balance: 0, txnSeq: 0,
   }));
 });
 test('student: CANNOT self-create profile with non-zero balance', async () => {
   const db = authed(C).firestore();
   await assertFails(setDoc(doc(db, 'users/' + C), {
-    email: C, role: 'student', full_name: 'C', balancePaise: 100, balance: 1,
+    email: C, role: 'student', full_name: 'C', balancePaise: 100, balance: 1, txnSeq: 0,
   }));
 });
 test('student: CANNOT self-create profile for someone else email', async () => {
   const db = authed(C).firestore();
   await assertFails(setDoc(doc(db, 'users/' + A), {
-    email: A, role: 'student', full_name: 'C', balancePaise: 0, balance: 0,
+    email: A, role: 'student', full_name: 'C', balancePaise: 0, balance: 0, txnSeq: 0,
   }));
 });
 test('student: CANNOT self-create profile with extra (unexpected) fields', async () => {
   const db = authed(C).firestore();
   await assertFails(setDoc(doc(db, 'users/' + C), {
-    email: C, role: 'student', full_name: 'C', balancePaise: 0, balance: 0,
+    email: C, role: 'student', full_name: 'C', balancePaise: 0, balance: 0, txnSeq: 0,
     isAdminClaim: true,
   }));
 });
@@ -301,103 +310,75 @@ test('student: CANNOT read any job document', async () => {
 /* =====================================================================
    4. Withdrawals — atomic pair, non-negative, exact delta
    ===================================================================== */
-test('student: withdrawal WITH matching companion txn (atomic) is allowed', async () => {
-  const db = authed(A).firestore();
+/* v3.5 protocol: the withdrawal user write bumps txnSeq by 1 and the
+   companion txn MUST live at the canonical id w_{email}_{newSeq}. */
+function withdrawalBatch(db, email, finalPaise, seq, amountPaise, { txnId, extraUser = {} } = {}) {
   const b = writeBatch(db);
-  b.update(doc(db, 'users/' + A), { balancePaise: 3000, balance: 30 });
-  b.set(doc(db, 'users/' + A + '/transactions/w1'), {
-    type: 'withdrawal', studentId: A, amountPaise: 2000, amount: 20,
+  b.update(doc(db, 'users/' + email), Object.assign(
+    { balancePaise: finalPaise, balance: finalPaise / 100, txnSeq: seq }, extraUser));
+  b.set(doc(db, 'users/' + email + '/transactions/' + (txnId || ('w_' + email + '_' + seq))), {
+    type: 'withdrawal', studentId: email, amountPaise, amount: amountPaise / 100,
     description: 'Books',
   });
-  await assertSucceeds(b.commit());
+  return b;
+}
+
+test('student: withdrawal WITH matching companion txn (atomic) is allowed', async () => {
+  const db = authed(A).firestore();
+  // Withdraw 2000 of 5000 → 3000 left; seq 0 → 1; canonical id w_A_1.
+  await assertSucceeds(withdrawalBatch(db, A, 3000, 1, 2000).commit());
 });
 test('student: withdrawal WITHOUT companion txn is denied', async () => {
   const db = authed(A).firestore();
-  await assertFails(updateDoc(doc(db, 'users/' + A), { balancePaise: 3000 }));
+  await assertFails(updateDoc(doc(db, 'users/' + A),
+    { balancePaise: 3000, balance: 30, txnSeq: 1 }));
 });
 test('student: companion txn WITHOUT balance reduction is denied', async () => {
   const db = authed(A).firestore();
-  await assertFails(setDoc(doc(db, 'users/' + A + '/transactions/w1'), {
+  await assertFails(setDoc(doc(db, 'users/' + A + '/transactions/w_' + A + '_1'), {
     type: 'withdrawal', studentId: A, amountPaise: 2000, amount: 20,
   }));
 });
 test('student: withdrawal driving balance negative is denied', async () => {
   const db = authed(A).firestore();
-  const b = writeBatch(db);
-  b.update(doc(db, 'users/' + A), { balancePaise: -1000 });
-  b.set(doc(db, 'users/' + A + '/transactions/w1'), {
-    type: 'withdrawal', studentId: A, amountPaise: 6000, amount: 60,
-  });
-  await assertFails(b.commit());
+  await assertFails(withdrawalBatch(db, A, -1000, 1, 6000).commit());
 });
 test('student: withdrawal txn amount must EXACTLY equal the delta', async () => {
   const db = authed(A).firestore();
+  // User drops by 1500 (→3500) but the canonical txn claims 2000:
+  // the txn rule checks final == pre - amount and denies the batch.
   const b = writeBatch(db);
-  b.update(doc(db, 'users/' + A), { balancePaise: 3500 }); // delta 1500
-  b.set(doc(db, 'users/' + A + '/transactions/w1'), {
+  b.update(doc(db, 'users/' + A), { balancePaise: 3500, balance: 35, txnSeq: 1 });
+  b.set(doc(db, 'users/' + A + '/transactions/w_' + A + '_1'), {
     type: 'withdrawal', studentId: A, amountPaise: 2000, amount: 20, // mismatch
   });
   await assertFails(b.commit());
 });
 test('student: second withdrawal cannot overdraw after first one (sequential)', async () => {
   const db = authed(A).firestore();
-  // First: withdraw 4000 of 5000 → 1000 left.
-  let b = writeBatch(db);
-  b.update(doc(db, 'users/' + A), { balancePaise: 1000 });
-  b.set(doc(db, 'users/' + A + '/transactions/w1'), {
-    type: 'withdrawal', studentId: A, amountPaise: 4000, amount: 40,
-  });
-  await assertSucceeds(b.commit());
-  // Second: attempt 2000 from 1000 → denied.
-  b = writeBatch(db);
-  b.update(doc(db, 'users/' + A), { balancePaise: -1000 });
-  b.set(doc(db, 'users/' + A + '/transactions/w2'), {
-    type: 'withdrawal', studentId: A, amountPaise: 2000, amount: 20,
-  });
-  await assertFails(b.commit());
+  // First: withdraw 4000 of 5000 → 1000 left (seq 0 → 1).
+  await assertSucceeds(withdrawalBatch(db, A, 1000, 1, 4000).commit());
+  // Second: attempt 2000 from 1000 → negative → denied.
+  await assertFails(withdrawalBatch(db, A, -1000, 2, 2000).commit());
 });
 test('student: STALE withdrawal replay (double spend) is denied — delta 0', async () => {
   const db = authed(A).firestore();
-  const b = writeBatch(db);
-  b.update(doc(db, 'users/' + A), { balancePaise: 3000 });
-  b.set(doc(db, 'users/' + A + '/transactions/w1'), {
-    type: 'withdrawal', studentId: A, amountPaise: 2000, amount: 20,
-  });
-  await assertSucceeds(b.commit());
-  // Client retries the SAME stale batch: the live balance is already 3000,
-  // so the delta is 0 and the rules reject it.
-  b = writeBatch(db);
-  b.update(doc(db, 'users/' + A), { balancePaise: 3000 });
-  b.set(doc(db, 'users/' + A + '/transactions/w1-retry'), {
-    type: 'withdrawal', studentId: A, amountPaise: 2000, amount: 20,
-  });
-  await assertFails(b.commit());
+  await assertSucceeds(withdrawalBatch(db, A, 3000, 1, 2000).commit());
+  // Client retries the SAME stale batch: the pre-batch seq is already 1,
+  // so the claimed newSeq 1 is not oldSeq+1 (and the txn id is taken).
+  await assertFails(withdrawalBatch(db, A, 3000, 1, 2000, { txnId: 'w_' + A + '_1-retry' }).commit());
 });
 test('student: withdrawal batch bundling a profile field is denied (balance-only writes)', async () => {
   const db = authed(A).firestore();
-  const b = writeBatch(db);
-  b.update(doc(db, 'users/' + A), { balancePaise: 4500, full_name: 'A Prime' });
-  b.set(doc(db, 'users/' + A + '/transactions/w1'), {
-    type: 'withdrawal', studentId: A, amountPaise: 500, amount: 5,
-  });
-  await assertFails(b.commit());
+  await assertFails(withdrawalBatch(db, A, 4500, 1, 500, { extraUser: { full_name: 'A Prime' } }).commit());
 });
 test('student: withdrawal batch that also edits role is denied', async () => {
   const db = authed(A).firestore();
-  const b = writeBatch(db);
-  b.update(doc(db, 'users/' + A), { balancePaise: 4500, role: 'admin' });
-  b.set(doc(db, 'users/' + A + '/transactions/w1'), {
-    type: 'withdrawal', studentId: A, amountPaise: 500, amount: 5,
-  });
-  await assertFails(b.commit());
+  await assertFails(withdrawalBatch(db, A, 4500, 1, 500, { extraUser: { role: 'admin' } }).commit());
 });
 test('student: withdrawal batch with an EXTRA third write is denied', async () => {
   const db = authed(A).firestore();
-  const b = writeBatch(db);
-  b.update(doc(db, 'users/' + A), { balancePaise: 4500 });
-  b.set(doc(db, 'users/' + A + '/transactions/w1'), {
-    type: 'withdrawal', studentId: A, amountPaise: 500, amount: 5,
-  });
+  const b = withdrawalBatch(db, A, 4500, 1, 500);
   b.set(doc(db, 'users/' + A + '/transactions/w-extra'), {
     type: 'withdrawal', studentId: A, amountPaise: 1, amount: 0.01,
   });
@@ -470,13 +451,13 @@ test('admin: can list all users and read all ledgers', async () => {
 test('admin: can provision a new student (zero balances)', async () => {
   const db = adminCtx().firestore();
   await assertSucceeds(setDoc(doc(db, 'users/' + C), {
-    email: C, role: 'student', full_name: 'C', balancePaise: 0, balance: 0,
+    email: C, role: 'student', full_name: 'C', balancePaise: 0, balance: 0, txnSeq: 0,
   }));
 });
 test('admin: can provision another admin (only admin can grant admin, at create)', async () => {
   const db = adminCtx().firestore();
   await assertSucceeds(setDoc(doc(db, 'users/admin2@jkss.in'), {
-    email: 'admin2@jkss.in', role: 'admin', full_name: 'Admin 2', balancePaise: 0, balance: 0,
+    email: 'admin2@jkss.in', role: 'admin', full_name: 'Admin 2', balancePaise: 0, balance: 0, txnSeq: 0,
   }));
 });
 test('admin: CANNOT create a user with non-zero balance', async () => {
@@ -679,7 +660,10 @@ test('admin: reversal using CURRENT-roster amounts (not original allocations) is
   // Roster "changed": someone tries to debit A 9000 (the whole pool)
   // instead of the original 5000.
   const b = writeBatch(db);
-  b.update(doc(db, 'users/' + A), { balancePaise: 5000 - 9000 }); // → -4000, active
+  b.update(doc(db, 'users/' + A), {
+    balancePaise: 5000 - 9000, // → -4000, active
+    creditJobId: null, reversalJobId: 'j-old',
+  });
   b.set(doc(db, 'users/' + A + '/transactions/rev_j-old_' + A), {
     type: 'reversal', studentId: A, jobId: 'j-old', amountPaise: 9000, amount: 90,
   });
@@ -711,7 +695,10 @@ test('admin: second reversal of the same (already tombstoned) job is denied', as
   await assertSucceeds(b1.commit());
   // Retry / double reversal: the users writes would debit again.
   const b2 = writeBatch(db);
-  b2.update(doc(db, 'users/' + A), { balancePaise: 0 - 5000 });
+  b2.update(doc(db, 'users/' + A), {
+    balancePaise: 0 - 5000,
+    creditJobId: null, reversalJobId: 'j-old',
+  });
   b2.set(doc(db, 'users/' + A + '/transactions/rev_j-old_' + A + '_retry'), {
     type: 'reversal', studentId: A, jobId: 'j-old', amountPaise: 5000, amount: 50,
   });
@@ -760,19 +747,16 @@ test('admin: CANNOT write unknown paths (no catch-all)', async () => {
   await assertFails(updateDoc(doc(db, 'other/thing'), { x: 2 }));
 });
 test('removed student: reversal debits the ORIGINAL amount and may drive them negative', async () => {
-  // Tombstone B, let B withdraw ₹10 (4000 → 3000), then reverse j-old with
-  // the ORIGINAL allocations (A: 5000, B: 4000) — B ends at -1000, which is
-  // allowed because B is removed (the fund's standing liability).
+  // Tombstone B, let B withdraw ₹10 (4000 → 3000, seq 0 → 1) as B, then
+  // reverse j-old with the ORIGINAL allocations (A: 5000, B: 4000) — B
+  // ends at -1000, which is allowed because B is removed (the fund's
+  // standing liability).
   const db = adminCtx().firestore();
   await assertSucceeds(updateDoc(doc(db, 'users/' + B), { removedAt: 1 }));
-  let b = writeBatch(db);
-  b.update(doc(db, 'users/' + B), { balancePaise: 3000 });
-  b.set(doc(db, 'users/' + B + '/transactions/w-b'), {
-    type: 'withdrawal', studentId: B, amountPaise: 1000, amount: 10,
-  });
-  await assertSucceeds(b.commit());
+  const dbB = authed(B).firestore();
+  await assertSucceeds(withdrawalBatch(dbB, B, 3000, 1, 1000).commit());
 
-  b = jobReversalBatch(db, 'j-old',
+  const b = jobReversalBatch(db, 'j-old',
     { [A]: 5000, [B]: 4000 },
     { [A]: 5000, [B]: 3000 });
   await assertSucceeds(b.commit());

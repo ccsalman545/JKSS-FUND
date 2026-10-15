@@ -80,6 +80,9 @@ export const api = {
         avatar: fbUser.photoURL || '',
         balancePaise: 0,
         balance: 0,
+        // v3.5 protocol: every new profile starts the withdrawal counter
+        // at 0 (required by the rules; legacy profiles need a one-time fix).
+        txnSeq: 0,
         createdAt: now(),
       };
       await ref.set(data);
@@ -150,7 +153,7 @@ export const api = {
     if (existing.exists) throw new Error('This email is already registered');
     await ref.set({
       email, role: 'student', full_name, avatar: '',
-      balancePaise: 0, balance: 0, createdAt: now(),
+      balancePaise: 0, balance: 0, txnSeq: 0, createdAt: now(),
     });
   },
 
@@ -243,9 +246,16 @@ export const api = {
       // generate no balance write.
       Object.entries(allocations).forEach(([email, amountPaiseAlloc]) => {
         if (amountPaiseAlloc <= 0) return;
+        // v3.5 protocol: the user write carries the job reference so the
+        // rules can tie it to the job/txn in the same batch (the rules
+        // language has no request.writes). Both fields are always written
+        // (the inactive one is null) — the rules cannot read missing
+        // fields, but null is a readable value.
         t.update(userDoc(email), {
           balancePaise: balances[email] + amountPaiseAlloc,
           balance: paiseToRupees(balances[email] + amountPaiseAlloc),
+          creditJobId: jobId,
+          reversalJobId: null,
         });
         // Canonical id (required by the rules): earn_{jobId}_{email}.
         t.set(txnsOf(email).doc(`earn_${jobId}_${email}`), {
@@ -327,9 +337,13 @@ export const api = {
 
       emails.forEach((email) => {
         const amountPaiseAlloc = allocations[email];
+        // v3.5 protocol: the user write carries the job reference (the
+        // rules tie the batch together through it — no request.writes).
         t.update(userDoc(email), {
           balancePaise: balances[email] - amountPaiseAlloc,
           balance: paiseToRupees(balances[email] - amountPaiseAlloc),
+          creditJobId: null,
+          reversalJobId: id,
         });
         // Deterministic id (required by the rules): rev_{jobId}_{email}.
         t.set(txnsOf(email).doc(`rev_${id}_${email}`), {
@@ -447,13 +461,18 @@ export const api = {
   },
 
   // ---------- Student: withdrawal (transaction-protected) ----------
-  // Concurrency-safe: the transaction re-reads the live balance, so two
+  // Concurrency-safe: the transaction re-reads the live profile, so two
   // simultaneous withdrawals cannot overdraw (the second sees the reduced
-  // balance). The deployed rules independently enforce the atomic
-  // (balance reduction + withdrawal txn) pairing and a non-negative final
-  // balance even for non-transactional clients.
-  // `idempotencyKey` (optional): caller-supplied key for the withdrawal txn
-  // doc; re-submitting the same key is a no-op (returns alreadyProcessed).
+  // balance and the bumped seq). The deployed rules independently enforce,
+  // even for non-transactional clients: (a) the atomic (balance reduction
+  // + withdrawal txn) pair, (b) a monotonically increasing txnSeq that must
+  // be bumped by EXACTLY 1 (a stale replay of a committed withdrawal shows
+  // a non-adjacent seq and is rejected — the server-side double-spend
+  // guard), (c) a non-negative final balance, and (d) the canonical txn ID
+  // w_{email}_{newSeq}.
+  // `idempotencyKey` (optional, caller-supplied): stored as metadata on the
+  // txn doc; if a txn with the same key already exists, returns
+  // alreadyProcessed (best-effort client-side idempotency).
   async withdraw(rupees, description, idempotencyKey) {
     const amountPaise = toPaise(rupees);
     if (!Number.isInteger(amountPaise) || amountPaise <= 0) throw new Error('Invalid amount');
@@ -461,30 +480,51 @@ export const api = {
     const email = norm(auth().currentUser?.email);
     const uRef = userDoc(email);
     const key = idempotencyKey
-      || 'w_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
-    const txnRef = txnsOf(email).doc(key);
+      || 'ik_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
 
     return db.runTransaction(async (t) => {
-      const [uSnap, dupSnap] = await Promise.all([t.get(uRef), t.get(txnRef)]);
-      if (dupSnap.exists) {
-        return {
-          alreadyProcessed: true,
-          balance: paiseToRupees(paiseOf(uSnap.data())),
-        };
+      // Best-effort idempotency: was this key already written by a prior
+      // txn of mine? (Reads my own collection — always allowed.)
+      if (idempotencyKey) {
+        const dupSnap = await t.get(
+          txnsOf(email).where('idempotencyKey', '==', idempotencyKey)
+        );
+        if (dupSnap.size) {
+          const uSnap = await t.get(uRef);
+          return {
+            alreadyProcessed: true,
+            balance: paiseToRupees(paiseOf(uSnap.data())),
+          };
+        }
       }
+
+      const uSnap = await t.get(uRef);
       if (!uSnap.exists) throw new Error('Profile not found');
+      // v3.5 protocol: profiles carry a monotonic withdrawal counter.
+      // Legacy profiles missing it need a one-time fix (set txnSeq: 0) —
+      // the rules deny withdrawals for them on purpose (no guessing).
+      const oldSeq = uSnap.data().txnSeq;
+      if (!Number.isInteger(oldSeq)) {
+        throw new Error(
+          'Your profile is missing the withdrawal counter (txnSeq). ' +
+          'Ask an admin to set txnSeq: 0 on your profile once.'
+        );
+      }
       const balancePaise = paiseOf(uSnap.data());
       if (amountPaise > balancePaise) throw new Error('Insufficient balance');
 
+      const newSeq = oldSeq + 1;
       const newPaise = balancePaise - amountPaise;
-      // Explicit FINAL value (never a server increment): the rules compute
+      // Explicit FINAL values (never a server increment): the rules compute
       // the delta against the live document, which makes a stale/duplicate
-      // batch impossible (it would show delta 0 and be rejected).
+      // batch impossible (non-adjacent seq and/or taken txn ID).
       t.update(uRef, {
         balancePaise: newPaise,
         balance: paiseToRupees(newPaise),
+        txnSeq: newSeq,
       });
-      t.set(txnRef, {
+      // Canonical ID (required by the rules): w_{email}_{newSeq}.
+      t.set(txnsOf(email).doc(`w_${email}_${newSeq}`), {
         type: 'withdrawal',
         studentId: email,
         amountPaise,
