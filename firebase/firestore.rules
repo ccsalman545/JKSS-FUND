@@ -13,9 +13,13 @@ rules_version = '2';
 //    `is` (a call with an UNDEFINED argument yields UNDEFINED). There is
 //    NO safe "does field exist" probe: guard by structure instead (the
 //    app always writes the fields the rules read; a missing one = deny).
-//  * get()/getAfter() take a PATH TEMPLATE whose $(...) captures may ONLY
-//    be simple variable references (wildcards, function parameters, let
-//    bindings). Build dynamic IDs in a `let` first, then capture it.
+//  * get()/getAfter() take an UNQUOTED PATH EXPRESSION:
+//        get(/databases/$(database)/documents/users/$(email))
+//    A QUOTED string literal ('/databases/...') is just a string and
+//    produces "Received: get(string). Expected: get(path)." at runtime.
+//    $(...) captures accept expressions (verified: match-block wildcards,
+//    function parameters, let bindings). Build dynamic IDs in a `let`
+//    first, then capture it.
 //  * request.writes DOES NOT EXIST in Firestore rules. Cross-write
 //    consistency of an atomic batch is proved with:
 //      - get()      = pre-batch state
@@ -92,7 +96,7 @@ service cloud.firestore {
 
     // Simple-variable-only path capture: the email arrives as a parameter.
     function adminDocRole(email) {
-      let d = get('/databases/$(database)/documents/users/$(email)');
+      let d = get(/databases/$(database)/documents/users/$(email));
       return d.exists && d.data.role == 'admin';
     }
 
@@ -139,8 +143,8 @@ service cloud.firestore {
         let oldSeq = resource.data.txnSeq;
         let delta = paiseOf(resource.data) - newPaise;
         let tid = newSeq is int ? 'w_' + email + '_' + toString(newSeq) : null;
-        let tPre = tid == null ? null : get('/databases/$(database)/documents/users/$(email)/transactions/$(tid)');
-        let tAfter = tid == null ? null : getAfter('/databases/$(database)/documents/users/$(email)/transactions/$(tid)');
+        let tPre = tid == null ? null : get(/databases/$(database)/documents/users/$(email)/transactions/$(tid));
+        let tAfter = tid == null ? null : getAfter(/databases/$(database)/documents/users/$(email)/transactions/$(tid));
         return newPaise is int
           && newPaise >= 0
           && oldSeq is int
@@ -163,10 +167,10 @@ service cloud.firestore {
         let jid = request.resource.data.creditJobId;
         let delta = newPaise - paiseOf(resource.data);
         let tid = jid is string ? 'earn_' + jid + '_' + email : null;
-        let jPre = jid is string ? get('/databases/$(database)/documents/jobs/$(jid)') : null;
-        let jAfter = jid is string ? getAfter('/databases/$(database)/documents/jobs/$(jid)') : null;
-        let tPre = tid == null ? null : get('/databases/$(database)/documents/users/$(email)/transactions/$(tid)');
-        let tAfter = tid == null ? null : getAfter('/databases/$(database)/documents/users/$(email)/transactions/$(tid)');
+        let jPre = jid is string ? get(/databases/$(database)/documents/jobs/$(jid)) : null;
+        let jAfter = jid is string ? getAfter(/databases/$(database)/documents/jobs/$(jid)) : null;
+        let tPre = tid == null ? null : get(/databases/$(database)/documents/users/$(email)/transactions/$(tid));
+        let tAfter = tid == null ? null : getAfter(/databases/$(database)/documents/users/$(email)/transactions/$(tid));
         let tData = (tAfter != null && tAfter.exists) ? tAfter.data : null;
         return newPaise is int
           && newPaise >= 0
@@ -201,10 +205,10 @@ service cloud.firestore {
         let jid = request.resource.data.reversalJobId;
         let delta = paiseOf(resource.data) - newPaise;
         let tid = jid is string ? 'rev_' + jid + '_' + email : null;
-        let j = jid is string ? get('/databases/$(database)/documents/jobs/$(jid)') : null;
-        let jAfter = jid is string ? getAfter('/databases/$(database)/documents/jobs/$(jid)') : null;
-        let tPre = tid == null ? null : get('/databases/$(database)/documents/users/$(email)/transactions/$(tid)');
-        let tAfter = tid == null ? null : getAfter('/databases/$(database)/documents/users/$(email)/transactions/$(tid)');
+        let j = jid is string ? get(/databases/$(database)/documents/jobs/$(jid)) : null;
+        let jAfter = jid is string ? getAfter(/databases/$(database)/documents/jobs/$(jid)) : null;
+        let tPre = tid == null ? null : get(/databases/$(database)/documents/users/$(email)/transactions/$(tid));
+        let tAfter = tid == null ? null : getAfter(/databases/$(database)/documents/users/$(email)/transactions/$(tid));
         let tData = (tAfter != null && tAfter.exists) ? tAfter.data : null;
         return newPaise is int
           && delta > 0
@@ -290,8 +294,8 @@ service cloud.firestore {
       // companion balance write without request.writes.
       function withdrawalTxnOk() {
         let t = request.resource.data;
-        let u = get('/databases/$(database)/documents/users/$(email)');
-        let uAfter = getAfter('/databases/$(database)/documents/users/$(email)');
+        let u = get(/databases/$(database)/documents/users/$(email));
+        let uAfter = getAfter(/databases/$(database)/documents/users/$(email));
         let finalPaise = uAfter.exists ? uAfter.data.balancePaise : null;
         let canon = 'w_' + email + '_' + toString(uAfter.exists ? uAfter.data.txnSeq : -1);
         return t.type == 'withdrawal'
@@ -314,8 +318,8 @@ service cloud.firestore {
       function earningTxnOk() {
         let t = request.resource.data;
         let jid = t.jobId is string ? t.jobId : null;
-        let jPre = jid == null ? null : get('/databases/$(database)/documents/jobs/$(jid)');
-        let jAfter = jid == null ? null : getAfter('/databases/$(database)/documents/jobs/$(jid)');
+        let jPre = jid == null ? null : get(/databases/$(database)/documents/jobs/$(jid));
+        let jAfter = jid == null ? null : getAfter(/databases/$(database)/documents/jobs/$(jid));
         let a = (jAfter != null && jAfter.exists && jAfter.data.allocations is map) ? jAfter.data.allocations.get(email, null) : null;
         return t.type == 'earning'
           && t.studentId == email
@@ -337,8 +341,8 @@ service cloud.firestore {
       function reversalTxnOk() {
         let t = request.resource.data;
         let jid = t.jobId is string ? t.jobId : null;
-        let j = jid == null ? null : get('/databases/$(database)/documents/jobs/$(jid)');
-        let jAfter = jid == null ? null : getAfter('/databases/$(database)/documents/jobs/$(jid)');
+        let j = jid == null ? null : get(/databases/$(database)/documents/jobs/$(jid));
+        let jAfter = jid == null ? null : getAfter(/databases/$(database)/documents/jobs/$(jid));
         let a = (j != null && j.exists && j.data.allocations is map) ? j.data.allocations.get(email, null) : null;
         return t.type == 'reversal'
           && t.studentId == email
@@ -401,8 +405,8 @@ service cloud.firestore {
       // this same batch (final state via getAfter — a batch without the
       // committee write shows delta 0 and is rejected).
       function jobCommitteeCredited(d) {
-        let cOld = get('/databases/$(database)/documents/meta/committee');
-        let cAfter = getAfter('/databases/$(database)/documents/meta/committee');
+        let cOld = get(/databases/$(database)/documents/meta/committee);
+        let cAfter = getAfter(/databases/$(database)/documents/meta/committee);
         return cOld.exists
           && cAfter.exists
           && cAfter.data.balancePaise is int
@@ -439,8 +443,8 @@ service cloud.firestore {
       // The committee must be credited back by EXACTLY the original share
       // within this same batch.
       function reversalCommitteeReturned() {
-        let cOld = get('/databases/$(database)/documents/meta/committee');
-        let cAfter = getAfter('/databases/$(database)/documents/meta/committee');
+        let cOld = get(/databases/$(database)/documents/meta/committee);
+        let cAfter = getAfter(/databases/$(database)/documents/meta/committee);
         return cOld.exists
           && cAfter.exists
           && cAfter.data.balancePaise is int
@@ -473,9 +477,9 @@ service cloud.firestore {
       function creditOk() {
         let c = request.resource.data;
         let jid = c.lastJobId is string ? c.lastJobId : null;
-        let jPre = jid == null ? null : get('/databases/$(database)/documents/jobs/$(jid)');
-        let jAfter = jid == null ? null : getAfter('/databases/$(database)/documents/jobs/$(jid)');
-        let cOld = get('/databases/$(database)/documents/meta/committee');
+        let jPre = jid == null ? null : get(/databases/$(database)/documents/jobs/$(jid));
+        let jAfter = jid == null ? null : getAfter(/databases/$(database)/documents/jobs/$(jid));
+        let cOld = get(/databases/$(database)/documents/meta/committee);
         return jid != null
           && jPre != null
           && jPre.exists == false
@@ -495,9 +499,9 @@ service cloud.firestore {
       function reversalCreditOk() {
         let c = request.resource.data;
         let jid = c.reversedJobId is string ? c.reversedJobId : null;
-        let j = jid == null ? null : get('/databases/$(database)/documents/jobs/$(jid)');
-        let jAfter = jid == null ? null : getAfter('/databases/$(database)/documents/jobs/$(jid)');
-        let cOld = get('/databases/$(database)/documents/meta/committee');
+        let j = jid == null ? null : get(/databases/$(database)/documents/jobs/$(jid));
+        let jAfter = jid == null ? null : getAfter(/databases/$(database)/documents/jobs/$(jid));
+        let cOld = get(/databases/$(database)/documents/meta/committee);
         return jid != null
           && j != null
           && j.exists
