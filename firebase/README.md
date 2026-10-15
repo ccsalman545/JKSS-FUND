@@ -27,12 +27,15 @@ The app no longer uses a custom server. All auth, data, and rules live in Fireba
 > manual Gradle steps if you leave Expo and build a raw native Android app.
 
 ## 3. Deploy rules + indexes
+`firebase/.firebaserc` defaults to `jkss-fund-local` — a valid **local
+placeholder** used by the emulators. For deploying to the real project, link
+and select it first:
 ```bash
 cd firebase
 npm install -g firebase-tools
 firebase login
-firebase use --add            # link YOUR_FIREBASE_PROJECT_ID
-firebase deploy --only firestore
+firebase use --add            # pick your real project (e.g. jkss-fund)
+firebase deploy --only firestore --project <your-real-project-id>
 ```
 This deploys `firestore.rules` (the v3.1 least-privilege ruleset) and
 `firestore.indexes.json`. **Deploying rules is a production change — do it only
@@ -76,9 +79,9 @@ npm i -g firebase-tools
 firebase emulators:exec --only firestore "node test/rules.test.js"
 ```
 
-The command starts a throwaway local emulator, loads `firestore.rules`, runs
-~40 authorized/unauthorized scenarios, and prints a pass/fail summary. It never
-touches your production project.
+The command starts a throwaway local emulator (project `jkss-fund-local`),
+loads `firestore.rules`, runs ~40 authorized/unauthorized scenarios, and prints
+a pass/fail summary. It never touches your production project.
 
 ## 6. Local emulators (optional, for development)
 ```bash

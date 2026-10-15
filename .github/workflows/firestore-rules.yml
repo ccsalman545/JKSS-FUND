@@ -40,7 +40,7 @@ jobs:
           echo "::notice title=rules-step::step shell started"
           # Capture everything (steps run under bash -e, so survive failure
           # with `|| true` and re-fail explicitly after reporting).
-          firebase emulators:exec --only firestore "node test/rules.test.js" \
+          firebase emulators:exec --project jkss-fund-local --only firestore "node test/rules.test.js" \
             > rules-test-output.txt 2>&1 || true
           {
             echo '## Firestore rules test output'
