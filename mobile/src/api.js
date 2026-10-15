@@ -1,5 +1,19 @@
 // src/api.js
-// Firebase-backed data layer (v3.1 — paise-exact accounting).
+// Firebase-backed data layer (v3.0 — username login + paise-exact accounting).
+//
+// LOGIN MODEL (v3.0)
+// ------------------
+// - Students sign in with the username the admin assigned. `src/identity.js`
+//   maps that username to the synthetic identifier
+//   `<username>@students.jkss-fund.invalid` (deterministic, no lookup table),
+//   and THAT identifier is what Firebase Authentication, the users/{id}
+//   document ID and every ledger entry use. One identity, three places,
+//   always the same string.
+// - The admin (and any legacy student whose profile is still keyed by their
+//   real email) type an email; it is passed to Firebase unchanged.
+// - Students still need an admin-PRE-AUTHORIZED users/{id} document. A
+//   successful sign-in without one is held in the "awaiting authorization"
+//   state and never opens the dashboard or any financial screen.
 //
 // MONEY MODEL
 // -----------
@@ -30,6 +44,9 @@
 import { auth, firestore } from './firebase';
 import { COMMITTEE_SHARE_PCT } from './config';
 import {
+  resolveLogin, displayUsername, identifierFor, isStudentIdentifier, assertUsername,
+} from './identity';
+import {
   toPaise, paiseToRupees, paiseOf, splitShares,
   allocateLargestRemainder, assertAllocationsExact,
 } from './accounting';
@@ -47,11 +64,13 @@ const txnsOf = (email) => userDoc(email).collection('transactions');
 const norm = (e) => (e || '').toLowerCase().trim();
 const now = () => firestore.FieldValue.serverTimestamp();
 
-const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-
 const profileShape = (email, d = {}) => ({
   id: email,
-  username: email,
+  // The handle the student actually types (derived from the identifier for
+  // synthetic student identities; the email local part for admin/legacy).
+  username: displayUsername(email),
+  identifier: email,
+  loginKind: isStudentIdentifier(email) ? 'username' : 'email',
   role: d.role || 'student',
   full_name: d.full_name || email.split('@')[0],
   avatar: d.avatar || '',
@@ -60,17 +79,36 @@ const profileShape = (email, d = {}) => ({
 
 export const api = {
   // ---------- Auth (delegated to AuthContext; these just perform sign-in) ----------
-  login: (email, password) => auth().signInWithEmailAndPassword(norm(email), password),
-  googleLogin: (idToken, role = 'student') =>
-    auth().signInWithCredential(auth.GoogleAuthProvider.credential(idToken)),
+  // Accepts what the login form gives us:
+  //   "thangal"                 -> thangal@{STUDENT_EMAIL_DOMAIN}
+  //   "ThrikkakaraJKSS@mail.com" -> that email, unchanged (admin / legacy login)
+  // Invalid input throws BEFORE any network call (see identity.resolveLogin).
+  async login(usernameOrEmail, password) {
+    const { identifier, kind } = resolveLogin(usernameOrEmail);
+    const pw = String(password == null ? '' : password);
+    if (!pw) throw new Error('Enter your password');
+    try {
+      return await auth().signInWithEmailAndPassword(identifier, pw);
+    } catch (e) {
+      throw new Error(friendlyAuthError(e, kind));
+    }
+  },
+
+  // Used by the admin's "add student" flow to preview the identifier that a
+  // username maps to (no network call).
+  identifierFor,
 
   // Resolve (READ-ONLY) the pre-authorized profile for the signed-in
   // account. Security model: profile documents are created ONLY by the
-  // admin (Students screen) or the Firebase console — never by the
-  // signed-in user. A Google sign-in whose email has no matching
-  // users/{email} doc returns null; AuthContext then holds the session in
-  // a "not pre-authorized" state and the app never opens the student
-  // dashboard for it. (The rules enforce the same: no self-create path.)
+  // admin (Students screen → "Add student") or by the local provisioning
+  // tool / Firebase console — never by the signed-in user themselves.
+  //
+  // The lookup key is the account's own identifier (its Firebase Auth email):
+  // for a student that is the synthetic `<username>@students.jkss-fund.invalid`
+  // identifier, so `fbUser.email` — NOT the typed username — is the doc ID.
+  // No matching doc → null → AuthContext holds the session in the
+  // "awaiting authorization" state and no dashboard/financial screen opens.
+  // (The rules enforce the same: there is no self-create path.)
   async ensureProfile(fbUser) {
     const email = norm(fbUser.email);
     const snap = await userDoc(email).get();
@@ -130,18 +168,31 @@ export const api = {
   },
 
   // ---------- Admin: students ----------
+  // Pre-authorize ONE student profile from the admin's Students screen.
+  //
+  // v3.0: the admin types the student's assigned USERNAME (e.g. "thangal"),
+  // not an email. The profile document ID is the synthetic identifier that
+  // username maps to, and it must be created BEFORE the student's first
+  // sign-in — this is the authorization gate.
+  //
+  // The document is written in the exact shape the Firestore rules allow
+  // (`newProfileOk`): role student, zero balances, txnSeq 0, allow-listed
+  // fields only. No email address is stored, because none exists.
   async addStudent(username, full_name) {
-    const email = norm(username);
-    if (!EMAIL_RE.test(email)) {
-      throw new Error('Enter a valid email address — students sign in with it');
-    }
-    const ref = userDoc(email);
+    const handle = assertUsername(username);
+    const identifier = identifierFor(handle);
+    const name = String(full_name == null ? '' : full_name).trim();
+    if (!name) throw new Error("Enter the student's full name");
+
+    const ref = userDoc(identifier);
     const existing = await ref.get();
-    if (existing.exists) throw new Error('This email is already registered');
+    if (existing.exists) throw new Error('@' + handle + ' is already registered');
+
     await ref.set({
-      email, role: 'student', full_name, avatar: '',
+      email: identifier, role: 'student', full_name: name, avatar: '',
       balancePaise: 0, balance: 0, txnSeq: 0, createdAt: now(),
     });
+    return { username: handle, identifier, full_name: name };
   },
 
   // Remove a student from the ACTIVE ROSTER (tombstone). Their balance and
@@ -398,7 +449,8 @@ export const api = {
       balance: paiseToRupees(balancePaise),
       balancePaise,
       full_name: d.full_name || email,
-      username: email,
+      username: displayUsername(email),
+      identifier: email,
       role: d.role || 'student',
       committeeBalance: paiseToRupees(committeePaise),
     };
@@ -410,7 +462,7 @@ export const api = {
       balance: 0, balancePaise: 0, full_name: email, role: 'student',
       committeeBalance: 0,
     };
-    const emit = () => cb({ ...st, username: email });
+    const emit = () => cb({ ...st, username: displayUsername(email), identifier: email });
     const u = userDoc(email).onSnapshot((s) => {
       const d = s.data() || {};
       st.balancePaise = paiseOf(d);
@@ -536,6 +588,27 @@ export const api = {
   },
 };
 
+// Map Firebase Auth failures to messages a student/admin can act on. The
+// wording is deliberately identical for "no such username" and "wrong
+// password" so the login form cannot be used to enumerate which usernames
+// exist (Firebase's own enumeration protection does the same server-side).
+function friendlyAuthError(e, kind) {
+  const code = String((e && e.code) || '');
+  const raw = String((e && e.message) || 'Sign-in failed').replace('Firebase: ', '');
+  if (/auth\/invalid-credential|auth\/wrong-password|auth\/user-not-found|auth\/invalid-email|auth\/invalid-login-credentials/.test(code)) {
+    return kind === 'email'
+      ? 'Wrong email or password.'
+      : 'Wrong username or password. Check the username your admin gave you.';
+  }
+  if (/auth\/user-disabled/.test(code)) return 'This account is disabled. Ask the admin.';
+  if (/auth\/too-many-requests/.test(code)) return 'Too many attempts. Wait a minute and try again.';
+  if (/auth\/network-request-failed/.test(code)) return 'Network problem — check your connection and try again.';
+  if (/PASSWORD_LOGIN_DISABLED/i.test(raw)) {
+    return 'Email/password sign-in is not enabled in Firebase (Console → Authentication → Sign-in method).';
+  }
+  return raw;
+}
+
 // Convert student/job/committee state into the dashboard shape the UI expects.
 // `students` are filtered to the active roster; totalDistributed is the
 // fund's total student liability (active + removed), in rupees.
@@ -549,7 +622,9 @@ function shapeDashboard(students, jobs, committeePaise) {
     0
   ) / 100;
   return {
-    students: active,
+    // `username` is derived from the document id (the synthetic identifier),
+    // so the admin's list shows the handle students actually type.
+    students: active.map((s) => ({ ...s, username: displayUsername(s.id), identifier: s.id })),
     jobs: jobs.map((j) => ({ ...j, reversed: j.status === 'reversed' })),
     committeeBalance: paiseToRupees(committeePaise),
     stats: {

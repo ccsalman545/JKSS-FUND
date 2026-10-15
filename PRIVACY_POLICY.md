@@ -6,7 +6,11 @@ JKSS Fund ("the App") is a hostel fund management tool. This policy explains wha
 we collect and how it is used.
 
 ## Data we collect
-- **Account data:** email address and display name (from Google Sign-In or email/password).
+- **Account data:** username and display name. Students are **not** asked for an
+  email address and none is collected: a username is mapped locally to a
+  non-deliverable internal identifier (`<username>@students.jkss-fund.invalid`,
+  RFC 2606) used only by Firebase Authentication. The administrator signs in with
+  an email address + password.
 - **Fund data:** job amounts, per-student balances, withdrawals, and committee fund totals
   you or your administrator enter.
 - We do **not** collect precise location, contacts, or device identifiers beyond what
@@ -21,7 +25,10 @@ we collect and how it is used.
 - Data is stored in **Google Firebase (Cloud Firestore)** and secured by Firebase
   Security Rules so students can only see their own balance and transactions, and only
   administrators can manage jobs and student records.
-- Authentication is handled by Firebase Authentication (Google / Email-Password).
+- Authentication is handled by Firebase Authentication (**Email/Password only** —
+  Google Sign-In is not used). No verification, password-reset or marketing email
+  is ever sent to a student identifier, because the identifier's domain cannot
+  receive mail.
 
 ## Data retention & deletion
 - Fund records persist until an administrator deletes a job or student, or the project is

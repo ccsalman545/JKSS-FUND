@@ -1,5 +1,15 @@
 // test/rules.test.js
-// Firestore SECURITY RULES test suite for JKSS-FUND v3.5.
+// Firestore SECURITY RULES test suite for JKSS-FUND v3.5 (+ v3.0 username logins).
+//
+// The rules are UNCHANGED by the v3.0 username/password work: a student's
+// Firestore identity is still `users/{auth-email}`, and a student's auth email
+// is now the synthetic identifier `<username>@students.jkss-fund.invalid`
+// (see mobile/src/identity.js + docs/USERNAME_LOGIN.md). Section 13 adds
+// scenarios that run the real engine with those identifiers, proving that:
+//   * pre-authorization is still the only way a student gets a profile,
+//   * an unauthorized synthetic account can read/write nothing,
+//   * withdrawals/credits/reversals work with synthetic identifiers,
+//   * nothing was loosened to make the new login work.
 //
 // Runs the DEPLOYED rules (firebase/firestore.rules) inside the real
 // Firestore emulator (production rules engine) via the official
@@ -769,4 +779,197 @@ test('removed student: reversal debits the ORIGINAL amount and may drive them ne
     { [A]: 5000, [B]: 4000 },
     { [A]: 5000, [B]: 3000 });
   await assertSucceeds(b.commit());
+});
+
+
+/* =====================================================================
+   13. v3.0 — USERNAME LOGINS: synthetic student identifiers
+   ---------------------------------------------------------------------
+   A student account's Firebase Auth email is
+   `<username>@students.jkss-fund.invalid` (RFC 2606 `.invalid` domain).
+   The rules know nothing about usernames — they key everything on the
+   token's email — so these scenarios prove the SAME least-privilege model
+   holds for the new identifiers, with no rules change required.
+   ===================================================================== */
+const S1 = 'thangal@students.jkss-fund.invalid';
+const S2 = 'midlaj@students.jkss-fund.invalid';
+const S3 = 'swabeeh@students.jkss-fund.invalid';   // never pre-authorized
+const PLANNED_SHAPE = {
+  email: S3, role: 'student', full_name: 'Swabeeh', avatar: '',
+  balancePaise: 0, balance: 0, txnSeq: 0,
+};
+
+async function seedSynthetic() {
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await setDoc(doc(db, 'users/' + S1), {
+      email: S1, role: 'student', full_name: 'Thangal', avatar: '',
+      balancePaise: 250000, balance: 2500, txnSeq: 0,
+    });
+    await setDoc(doc(db, 'users/' + S2), {
+      email: S2, role: 'student', full_name: 'Midlaj', avatar: '',
+      balancePaise: 0, balance: 0, txnSeq: 0,
+    });
+    await setDoc(doc(db, 'meta/committee'), { balancePaise: 0, balance: 0 });
+  });
+}
+
+test('v3.0: admin pre-authorizes a student at a SYNTHETIC identifier (exact app shape)', async () => {
+  await seedSynthetic();
+  const db = adminCtx().firestore();
+  await assertSucceeds(setDoc(doc(db, 'users/' + S3), Object.assign({}, PLANNED_SHAPE, { createdAt: 1 })));
+});
+
+test('v3.0: a synthetic student CANNOT self-create a profile (no self-provisioning)', async () => {
+  await seedSynthetic();
+  const db = authed(S3).firestore();
+  await assertFails(setDoc(doc(db, 'users/' + S3), Object.assign({}, PLANNED_SHAPE, { createdAt: 1 })));
+});
+
+test('v3.0: a synthetic student CANNOT pre-authorize another student', async () => {
+  await seedSynthetic();
+  const db = authed(S1).firestore();
+  await assertFails(setDoc(doc(db, 'users/' + S3), Object.assign({}, PLANNED_SHAPE, { createdAt: 1 })));
+  // ...nor grant themselves admin, nor seed a non-zero balance.
+  await assertFails(setDoc(doc(db, 'users/' + S1), {
+    email: S1, role: 'admin', full_name: 'Thangal', avatar: '', balancePaise: 999999, balance: 9999.99, txnSeq: 0,
+  }));
+});
+
+test('v3.0: an UNAUTHORIZED synthetic account can read nothing and write nothing', async () => {
+  await seedSynthetic();
+  const db = authed(S3).firestore();
+  await assertFails(getDoc(doc(db, 'users/' + S3)));                 // own (missing) profile
+  await assertFails(getDoc(doc(db, 'users/' + S1)));                 // another student
+  await assertFails(getDocs(collection(db, 'users')));               // roster list (admin-only)
+  await assertFails(getDoc(doc(db, 'users/' + S1 + '/transactions/' + 'earn_j-syn_' + S1)));
+  await assertFails(getDocs(collection(db, 'jobs')));
+  await assertFails(getDoc(doc(db, 'jobs/j-old')));
+  // Writes: no profile, no ledger entry, no balance, no job, no committee.
+  await assertFails(setDoc(doc(db, 'users/' + S3), PLANNED_SHAPE));
+  await assertFails(setDoc(doc(db, 'users/' + S3 + '/transactions/t1'), {
+    type: 'withdrawal', studentId: S3, amountPaise: 1, amount: 0.01, seq: 1,
+  }));
+  await assertFails(updateDoc(doc(db, 'users/' + S1), { balancePaise: 999999 }));
+  await assertFails(setDoc(doc(db, 'jobs/j-syn'), {
+    name: 'x', date: '2026-10-01', status: 'active', amountPaise: 1000,
+    committeeSharePaise: 100, studentSharePaise: 900, studentCount: 1, allocations: { [S1]: 900 },
+  }));
+  await assertFails(updateDoc(doc(db, 'meta/committee'), { balancePaise: 100000 }));
+});
+
+test('v3.0: a pre-authorized synthetic student reads ONLY their own data (+ the committee)', async () => {
+  await seedSynthetic();
+  const db = authed(S1).firestore();
+  await assertSucceeds(getDoc(doc(db, 'users/' + S1)));
+  await assertSucceeds(getDoc(doc(db, 'meta/committee')));           // public fund total
+  await assertFails(getDoc(doc(db, 'users/' + S2)));                 // another student's profile
+  await assertFails(getDocs(collection(db, 'users')));               // roster list
+  await assertFails(getDoc(doc(db, 'users/' + S2 + '/transactions/anything')));
+  await assertFails(getDoc(doc(db, 'jobs/j-nope')));
+});
+
+test('v3.0: synthetic student withdrawal (balance + canonical txn pair) is allowed', async () => {
+  await seedSynthetic();
+  const db = authed(S1).firestore();
+  // 250000 → 240000 paise, seq 0 → 1, companion id w_S1_1.
+  await assertSucceeds(withdrawalBatch(db, S1, 240000, 1, 10000).commit());
+});
+
+test('v3.0: synthetic student withdrawal withOUT the companion txn is denied', async () => {
+  await seedSynthetic();
+  const db = authed(S1).firestore();
+  const b = writeBatch(db);
+  b.update(doc(db, 'users/' + S1), {
+    balancePaise: 240000, balance: 2400, txnSeq: 1, withdrawalTxnId: 'w_' + S1 + '_1',
+  });
+  await assertFails(b.commit());
+});
+
+test('v3.0: synthetic student cannot change their own balance/role without a withdrawal pair', async () => {
+  await seedSynthetic();
+  const db = authed(S1).firestore();
+  await assertFails(updateDoc(doc(db, 'users/' + S1), { balancePaise: 999999 }));
+  await assertFails(updateDoc(doc(db, 'users/' + S1), { role: 'admin' }));
+  await assertFails(updateDoc(doc(db, 'users/' + S1), { txnSeq: 99 }));
+  await assertFails(deleteDoc(doc(db, 'users/' + S1)));
+});
+
+test('v3.0: admin job credit with allocations keyed by SYNTHETIC identifiers is allowed', async () => {
+  await seedSynthetic();
+  const db = adminCtx().firestore();
+  // ₹100 → 10000 paise: committee 1000 (floored 10%), pool 9000 over 2 students
+  // → base 4500, so every allocation must be 4500 or 4501 (rule-enforced).
+  const b = jobCreditBatch(db, 'j-syn', 10000,
+    { [S1]: 4500, [S2]: 4500 },
+    { [S1]: 250000, [S2]: 0 },
+    { committeeNewPaise: 1000 });
+  await assertSucceeds(b.commit());
+});
+
+test('v3.0: job credit is denied when a synthetic credit delta != the stored allocation', async () => {
+  await seedSynthetic();
+  const db = adminCtx().firestore();
+  // Allocation says 4500 for S2 but the user document only moves 100 paise.
+  const b = jobCreditBatch(db, 'j-syn-bad', 10000,
+    { [S1]: 4500, [S2]: 4500 },
+    { [S1]: 250000, [S2]: 0 },
+    { committeeNewPaise: 1000, userFinal: { [S2]: 100 } });
+  await assertFails(b.commit());
+});
+
+test('v3.0: job credit is denied when the committee share is not exactly 10%', async () => {
+  await seedSynthetic();
+  const db = adminCtx().firestore();
+  const b = jobCreditBatch(db, 'j-syn-bad2', 10000,
+    { [S1]: 4500, [S2]: 4500 },
+    { [S1]: 250000, [S2]: 0 },
+    { committeeNewPaise: 999 });
+  await assertFails(b.commit());
+});
+
+test('v3.0: reversing a job allocated to SYNTHETIC identifiers replays the original amounts', async () => {
+  await seedSynthetic();
+  const db = adminCtx().firestore();
+  await assertSucceeds(jobCreditBatch(db, 'j-syn-rev', 10000,
+    { [S1]: 4500, [S2]: 4500 },
+    { [S1]: 250000, [S2]: 0 },
+    { committeeNewPaise: 1000 }).commit());
+  // S1 = 254500, S2 = 4500, committee = 1000. Reversal → 250000 / 0 / 0.
+  await assertSucceeds(jobReversalBatch(db, 'j-syn-rev',
+    { [S1]: 4500, [S2]: 4500 },
+    { [S1]: 254500, [S2]: 4500 },
+    { committeeNewPaise: 0 }).commit());
+  // A SECOND reversal must fail (the job is already tombstoned) and must not
+  // debit anyone again — the ledger is append-only and double-reversal-proof.
+  await assertFails(jobReversalBatch(db, 'j-syn-rev',
+    { [S1]: 4500, [S2]: 4500 },
+    { [S1]: 250000, [S2]: 0 },
+    { committeeNewPaise: -1000 }).commit());
+});
+
+test('v3.0: an admin cannot create a synthetic profile whose email field != its id', async () => {
+  await seedSynthetic();
+  const db = adminCtx().firestore();
+  await assertFails(setDoc(doc(db, 'users/' + S3), Object.assign({}, PLANNED_SHAPE, {
+    email: S2, createdAt: 1,
+  })));
+  await assertFails(setDoc(doc(db, 'users/' + S3), Object.assign({}, PLANNED_SHAPE, {
+    createdAt: 1, extraField: 'nope',
+  })));
+});
+
+test('v3.0: legacy real-email profiles and synthetic ones coexist without extra privilege', async () => {
+  await seedSynthetic();
+  const db = adminCtx().firestore();
+  // The admin can still pre-authorize a legacy real-email student...
+  await assertSucceeds(setDoc(doc(db, 'users/legacy.student@jkss.in'), {
+    email: 'legacy.student@jkss.in', role: 'student', full_name: 'Legacy Student', avatar: '',
+    balancePaise: 0, balance: 0, txnSeq: 0, createdAt: 1,
+  }));
+  // ...and that legacy student gains exactly the same (minimal) rights.
+  const legacy = authed('legacy.student@jkss.in').firestore();
+  await assertSucceeds(getDoc(doc(legacy, 'users/legacy.student@jkss.in')));
+  await assertFails(getDoc(doc(legacy, 'users/' + S1)));
+  await assertFails(setDoc(doc(legacy, 'users/' + S3), PLANNED_SHAPE));
 });

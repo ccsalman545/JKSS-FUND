@@ -31,9 +31,6 @@
         "backgroundColor": "#3730A3"
       }
     },
-    "extra": {
-      "googleWebClientId": "YOUR_GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com"
-    },
     "plugins": ["@react-native-firebase/app"]
   }
 }

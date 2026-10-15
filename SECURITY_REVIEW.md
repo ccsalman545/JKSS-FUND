@@ -7,7 +7,8 @@ results, and the exact steps to run tests and deploy — plus an honest
 assessment of what is and is *not* safe for real money.
 
 **Status:** implementation + executable tests complete on branch
-`arena/dc657e31-jkss-fund` (tip `3cbe1da`). The rules suite is
+`arena/dc657e31-jkss-fund` (tip `3cbe1da`). **v3.0 addendum (username logins):
+`firestore.rules` is unchanged; see §11.** The rules suite is
 **executed in GitHub Actions CI** (Firestore emulator, production rules
 engine) — see §4. Latest run **38704744622: SUCCESS — 75/75 rules scenarios
 passed, 0 failure annotations**; Node suites green in the same run. Rules
@@ -567,8 +568,9 @@ Requested checks, with results:
   native projects only).
 - `ios.bundleIdentifier` = `com.jkssfund.app` — present but **out of scope**
   (no iOS work per the task); harmless.
-- `extra.googleWebClientId` = `YOUR_GOOGLE_WEB_CLIENT_ID…` — **placeholder**
-  (see §9.3); consumed by `config.js`.
+- `extra.googleWebClientId` — **removed in v3.0** together with the Google
+  Sign-In button and the `@react-native-google-signin/google-signin`
+  dependency (§11). `expo.extra` no longer exists; nothing reads it.
 - No secrets, no service-account data ✔.
 
 ### 9.2 `firebase/.firebaserc`
@@ -585,6 +587,12 @@ Requested checks, with results:
   the right project.
 
 ### 9.3 OAuth configuration (`google-services.json` ↔ app)
+
+> **v3.0 note:** Google Sign-In was removed from the app (the project never had
+> OAuth clients, and students must not need a Google account). Everything below
+> is the historical verification record; the checklist in §10.3 is kept only in
+> case Google sign-in is ever wanted again. Student login is now
+> username/password — see §11 and `docs/USERNAME_LOGIN.md`.
 - `mobile/google-services.json` = the **real config for project `jkss-fund`**
   (project number `753895495162`), Android client for `com.jkssfund.app` ✔.
   The `api_key` inside is a standard *client* key (meant to ship in the app;
@@ -737,3 +745,73 @@ clients — check existing credentials first):
 - Do not enable iOS or Firebase Hosting (out of scope).
 - Do not commit service-account credentials, private keys, or the release
   signing keystore to this repository.
+
+
+---
+
+## 11. v3.0 addendum — username/password logins for students
+
+**Goal:** students sign in with an admin-assigned username + password; no student
+email address is created or required; the admin keeps the existing Email/Password
+account; the completed security and accounting work stays intact.
+
+### 11.1 What is (and is not) different in the security model
+
+| | |
+|---|---|
+| `firebase/firestore.rules` | **Unchanged, byte-for-byte.** No rule was added, relaxed or removed to make the login work. The rules already resolve identity from `request.auth.token.email`, and a student's auth email *is* the synthetic identifier (below) |
+| Student identity | `users/{identifier}` where `identifier = <username>@students.jkss-fund.invalid` — the same string that Firebase Authentication stores as the account's email, the same string used for `users/{id}/transactions/*` and for `jobs/{job}.allocations` keys |
+| Admin identity | Unchanged: the existing Auth account; `users/{admin-email}` + the legacy `users/thrikkakarajkss` document. **Both are preserved** — the provisioning tool never matches an admin profile (it is excluded from roster matching) and only ever adds a missing `txnSeq: 0` to any user document |
+| Pre-authorization | Unchanged and still the only way in: `allow create: if isAdmin() && newProfileOk(...)`. There is **no self-provisioning path** for a student, which is why an unauthorized sign-in sees only the "awaiting authorization" screen |
+| Passwords | Students' passwords live **only** in Firebase Authentication. Nothing stores them in Firestore, and the only local copy is the tool's 0600 credentials file (git-ignored). The app never calls `sendPasswordResetEmail` |
+| Why `.invalid` | RFC 2606 reserves the TLD: it can never be registered or delivered to. A reset email addressed to a student identifier therefore cannot reach a third party, and we are not inventing a real address |
+
+### 11.2 New tests (all in CI; commands in §5)
+
+* `mobile/test/identity.test.js` — normalization, collision rules, injective
+  identifier mapping, RFC 2606 domain, password policy, 20k fuzz inputs.
+* `mobile/test/api.mock.test.js` (extended) — username login against a stubbed
+  Firebase Auth with **real `auth/*` error codes**, identical error text for
+  "unknown username" and "wrong password" (no enumeration), invalid input
+  rejected before any Auth call, the unauthorized-account gate, and ledger/doc
+  IDs all embedding the identifier.
+* `tools/provision/test/plan.test.js` / `passwords.test.js` — roster mapping,
+  collision determinism, blocking-vs-warning ambiguity handling, held-back
+  students, admin-profile preservation, unsafe flags refused, CSPRNG password
+  properties, credentials-file permissions and never-overwrite behaviour, plus a
+  docs↔code mapping-drift check.
+* `firebase/test/rules.test.js` — **89 scenarios** in the production rules
+  engine, including 14 new ones that run the engine with synthetic identifiers
+  (pre-authorization, unauthorized lockout, withdrawal/credit/reversal with
+  synthetic ids, no-loosening checks).
+* `tools/provision/test/emulator.test.js` — end-to-end against the Auth +
+  Firestore emulators: dry runs write nothing, 23 accounts created idempotently,
+  the admin account/password and both admin documents preserved, balances and
+  ledgers byte-identical, **no plaintext password anywhere in Firestore**,
+  valid/invalid password sign-in, an unauthorized account with no profile,
+  reset-password, identity migration with a pre-write backup, and the safety
+  gates (production `verify-identifier` refused; live writes need
+  `--confirm-project`).
+
+### 11.3 Residual risks introduced by v3.0 (honest list)
+
+1. **The identifier is guessable from the roster** (`thangal@…`). It is not a
+   secret and is not treated as one: the password is the credential, sign-in
+   failures are indistinguishable between "unknown username" and "wrong
+   password", and Firestore access still requires the pre-authorized profile.
+2. **The temporary-password distribution channel is human.** The credentials
+   file is plaintext by necessity (it must be handed out) — mode 0600,
+   git-ignored, one password per student, never a shared or name-based one. Move
+   it into a password manager and delete it after distribution.
+3. **Admin-side resets are a privileged local operation.** Anyone holding the
+   service-account key can reset a password. Treat that key like the fund's
+   bank credentials; it never belongs in the app or the repo.
+4. **`verify-identifier` cannot be run from this sandbox** against a real test
+   project (no credentials, and no production project may be touched). The
+   command is implemented and exercised against the Auth emulator in CI; the
+   real-project preflight remains a manual step (§4.5 of
+   `docs/USERNAME_LOGIN.md`) and must be run before bulk creation.
+5. **Legacy identities still keyed by a real email** can keep working (the login
+   form accepts an email), but the planner holds those students back so no
+   duplicate profile/balance can be created; migrating them carries the
+   *legacy lien* caveat documented in `docs/USERNAME_LOGIN.md` §7.4.

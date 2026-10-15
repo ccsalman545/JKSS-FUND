@@ -73,16 +73,25 @@ jobs:
           if-no-files-found: ignore
 
   accounting:
-    name: Accounting + api orchestration tests
+    name: Accounting + identity + api orchestration tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Run identity (username ↔ identifier) tests
+        working-directory: mobile
+        run: node test/identity.test.js
       - name: Run accounting core tests
         working-directory: mobile
         run: node test/accounting.test.js
-      - name: Run api orchestration tests (mock Firestore)
+      - name: Run api orchestration + login tests (mock Firestore/Auth)
         working-directory: mobile
         run: node test/api.mock.test.js
+      - name: Run provisioning planner tests
+        working-directory: tools/provision
+        run: node test/plan.test.js
+      - name: Run temporary-password / credentials-file tests
+        working-directory: tools/provision
+        run: node test/passwords.test.js

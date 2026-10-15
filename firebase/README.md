@@ -69,6 +69,16 @@ manually:
 > console, which bypasses rules) must create `users/<new-admin-email>` with
 > `role: "admin"` — existing roles can never be edited by the app or the client.
 
+### Student identifiers (v3.0)
+
+Students do not use email addresses. The app maps an admin-assigned username to
+a synthetic **email-shaped** identifier for Firebase Authentication:
+`<username>@students.jkss-fund.invalid` (RFC 2606 `.invalid` — never registrable,
+never deliverable). The same string is the `users/{identifier}` document ID, the
+owner of `users/{identifier}/transactions/*`, and the key inside
+`jobs/{job}.allocations`. **The rules are unchanged** — they key on the token's
+email, which is this identifier. See `../docs/USERNAME_LOGIN.md`.
+
 ## 5. Test the security rules (run before deploying)
 The full rules test suite (`test/rules.test.js`) runs the rules in the real
 Firestore emulator (the production rules engine). One-time setup on a machine
@@ -82,8 +92,19 @@ firebase emulators:exec --project jkss-fund-local --only firestore "node test/ru
 ```
 
 The command starts a throwaway local emulator (project `jkss-fund-local`),
-loads `firestore.rules`, runs 46 authorized/unauthorized scenarios, and prints
-a pass/fail summary. It never touches your production project.
+loads `firestore.rules`, runs 89 authorized/unauthorized scenarios (including
+the v3.0 synthetic student identifiers), and prints a pass/fail summary. It
+never touches your production project.
+
+The **provisioning + username-login end-to-end suite** uses the Auth and
+Firestore emulators (still nothing real):
+
+```bash
+cd ../tools/provision && npm ci
+cd ../firebase
+firebase emulators:exec --project jkss-fund-e2e --only firestore,auth \
+  "node ../tools/provision/test/emulator.test.js"
+```
 
 The same suite runs automatically in **GitHub Actions** on every push
 (`.github/workflows/firestore-rules.yml`); the job's output is published as a

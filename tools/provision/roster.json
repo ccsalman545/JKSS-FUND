@@ -1,0 +1,31 @@
+{
+  "_comment": "JKSS-FUND student roster (v3.0). Names only — NO student email addresses, ever. The provisioning tool derives a stable, unique username from each name with mobile/src/identity.js (assignUsernames) and maps it to the synthetic Firebase identifier <username>@students.jkss-fund.invalid. Add an explicit \"username\" to override a derived handle; add \"legacyIdentifier\" (an existing users/{id} document) ONLY when you have confirmed the match by hand — that is how an ambiguous existing profile is linked without guessing.",
+  "version": 3.0,
+  "domain": "students.jkss-fund.invalid",
+  "students": [
+    { "name": "Thangal" },
+    { "name": "Shafi" },
+    { "name": "Aboobacker" },
+    { "name": "Salman" },
+    { "name": "Hamid" },
+    { "name": "Muhsin Chelakkulam" },
+    { "name": "Midlaj" },
+    { "name": "Haneen" },
+    { "name": "Swalih" },
+    { "name": "Adil" },
+    { "name": "Muhsin Payyoli" },
+    { "name": "Salahudheen" },
+    { "name": "Irfan" },
+    { "name": "Thalhath" },
+    { "name": "Sinan" },
+    { "name": "Thajudheen" },
+    { "name": "Suhail" },
+    { "name": "Anwar" },
+    { "name": "Swabeeh" },
+    { "name": "Muneeb" },
+    { "name": "Bilal" },
+    { "name": "Sidheeq" },
+    { "name": "Aflah" },
+    { "name": "Adil Jr" }
+  ]
+}
