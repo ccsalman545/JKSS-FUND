@@ -5,14 +5,14 @@ import { View, Text, StyleSheet, Dimensions, ScrollView } from 'react-native';
 import { LineChart, PieChart } from 'react-native-chart-kit';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import { Screen, Header, Card, Segmented, EmptyState } from '../components/ui';
+import { Screen, FadeIn, Header, Card, Segmented, EmptyState } from '../components/ui';
 import { api } from '../api';
 import { formatINR } from '../utils/format';
 import { palette } from '../theme';
 
 const { width } = Dimensions.get('window');
 
-export default function ReportsScreen() {
+export default function ReportsScreen({ navigation }) {
   const { token } = useAuth();
   const { theme } = useTheme();
   const [period, setPeriod] = useState('monthly');
@@ -55,6 +55,7 @@ export default function ReportsScreen() {
 
   return (
     <Screen>
+      <FadeIn navigation={navigation}>
       <Header title="Reports" subtitle="Collections & distribution" />
 
       <Segmented
@@ -138,6 +139,7 @@ export default function ReportsScreen() {
         </Card>
       ) : null}
       </ScrollView>
+      </FadeIn>
     </Screen>
   );
 }

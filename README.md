@@ -53,16 +53,26 @@ so the build needs a (real) copy even though we use Firestore real-time instead 
 - 👤 Admin: students (search), jobs (live split preview), delete/reverse, monthly/yearly reports
 - 💸 Student: live balance (hide/show), quick-amount withdraw, filterable history grouped by month
 
-## 🎨 UI/UX — "Aurora" design system
+## 🎨 UI/UX — "Aurora M3" design system (Material 3)
 
-The entire UI was redesigned around a modern fintech language (v3.1):
+The entire UI is built on a **Material 3** tonal design language with a
+fintech identity (v3.2):
 
-- Indigo→violet gradient identity, amber accent, soft tonal surfaces (light + dark)
-- Gradient hero cards, glassy chips, floating rounded bottom tab bar
-- Animated bottom-sheet modals (withdraw, add student/job, change password, confirms)
-- Segmented controls, filter chips, month-grouped ledgers, split progress bars
-- Press feedback on every button, empty states, inline validation, cross-platform
+- **M3 color roles** — primary / secondary / surface tonal scale + semantic roles,
+  each theme tuned for WCAG-contrast text (light + dark)
+- **M3 shape scale** — 8 / 12 / 16 / 28 radii, fully-rounded (pill) buttons & chips
+- **M3 state layers** — pressed overlays + Android ripples on every interactive
+- **M3 NavigationBar** — full-width bottom bar with animated 64×32 tonal indicator pill
+- **M3 filled text fields**, tonal buttons, elevated cards, 28-radius dialogs
+- **Cinematic motion** — spring bottom sheets, per-screen fade/slide entrances on
+  tab focus, staggered splash, animated tab indicator (core RN `Animated`)
+- **Readability** — 16px inputs, 15px+ body, strong weight hierarchy, M3 onSurface
+  contrast, generous line heights
+- Gradient hero cards, glassy chips, split progress bars, filter chips,
+  month-grouped ledgers, empty states, inline validation, cross-platform
   password-change flow (no iOS-only `Alert.prompt`)
+- New brand assets: indigo→violet app icon, adaptive icon, full-bleed splash
+  (`mobile/assets/`)
 
 Built with core React Native `Animated` + `react-native-linear-gradient` (added to
 `mobile/package.json` — a plain `npm install` picks it up). Design tokens live in

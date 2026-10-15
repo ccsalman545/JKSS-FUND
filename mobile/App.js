@@ -1,20 +1,21 @@
 // mobile/App.js
 // Root navigation: splash → login → role-based tabs (student / admin).
-import React, { useEffect, useState } from 'react';
+// Bottom tabs render as a Material 3 navigation bar with an animated
+// tonal indicator pill (M3 NavigationBar spec: 64×32 secondaryContainer).
+import React, { useEffect, useRef, useState } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { StatusBar } from 'expo-status-bar';
-import { View, Text, StyleSheet, Pressable } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { View, Text, StyleSheet, Pressable, Animated } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'react-native-linear-gradient';
 
 import { ThemeProvider, useTheme } from './src/context/ThemeContext';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
-import { palette, radius } from './src/theme';
+import { radius } from './src/theme';
 import { APP_NAME } from './src/config';
-import { Button } from './src/components/ui';
 
 import SplashScreen from './src/screens/SplashScreen';
 import LoginScreen from './src/screens/LoginScreen';
@@ -39,42 +40,101 @@ const TAB_ICONS = {
   Reports: ['bar-chart', 'bar-chart-outline'],
 };
 
-const TabIcon = ({ route, focused, color }) => {
-  const [solid, outline] = TAB_ICONS[route.name] || ['ellipse', 'ellipse-outline'];
-  return <Ionicons name={focused ? solid : outline} size={22} color={color} />;
-};
+/* ---------------------- Material 3 navigation bar -------------------------- */
 
-function useTabOptions() {
+function M3TabBar({ state, navigation }) {
   const { theme } = useTheme();
-  return ({ route }) => ({
-    headerShown: false,
-    tabBarIcon: ({ color }) => <TabIcon route={route} focused={color === palette.primary} color={color} />,
-    tabBarActiveTintColor: palette.primary,
-    tabBarInactiveTintColor: theme.textFaint,
-    tabBarLabelStyle: { fontSize: 10.5, fontWeight: '700', letterSpacing: 0.3 },
-    tabBarStyle: {
-      position: 'absolute',
-      left: 12,
-      right: 12,
-      bottom: 10,
-      height: 60,
-      borderTopLeftRadius: 22,
-      borderTopRightRadius: 22,
-      backgroundColor: theme.tabBar,
-      borderTopWidth: 0,
-      elevation: 14,
-      shadowColor: '#0F172A',
-      shadowOffset: { width: 0, height: -4 },
-      shadowOpacity: theme.mode === 'dark' ? 0.5 : 0.16,
-      shadowRadius: 18,
-    },
-  });
+  const insets = useSafeAreaInsets();
+  const [w, setW] = useState(0);
+  const count = Math.max(1, state.routes.length);
+  const idx = state.index;
+  const pos = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (w > 0) {
+      Animated.spring(pos, {
+        toValue: idx * (w / count),
+        useNativeDriver: true,
+        friction: 28,
+        tension: 200,
+      }).start();
+    }
+  }, [idx, w, count]);
+
+  const segW = w / count;
+
+  return (
+    <View
+      onLayout={(e) => setW(e.nativeEvent.layout.width)}
+      style={{
+        backgroundColor: theme.tabBar,
+        borderTopLeftRadius: 28,
+        borderTopRightRadius: 28,
+        height: 78 + insets.bottom,
+        elevation: 12,
+        shadowColor: '#0F172A',
+        shadowOffset: { width: 0, height: -4 },
+        shadowOpacity: theme.mode === 'dark' ? 0.5 : 0.14,
+        shadowRadius: 16,
+      }}
+    >
+      <View style={{ flexDirection: 'row', flex: 1 }}>
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            {
+              position: 'absolute',
+              top: 6,
+              width: 64,
+              height: 32,
+              borderRadius: radius.pill,
+              backgroundColor: theme.secondaryContainer,
+              transform: [{ translateX: pos }],
+            },
+          ]}
+        />
+        {state.routes.map((route, i) => {
+          const active = i === idx;
+          const [solid, outline] = TAB_ICONS[route.name] || ['ellipse', 'ellipse-outline'];
+          return (
+            <Pressable
+              key={route.key}
+              style={{ flex: 1 }}
+              android_ripple={{ color: theme.ripple, borderless: true }}
+              onPress={() => navigation.navigate(route.name)}
+            >
+              <View style={{ width: 64, height: 32, marginTop: 6, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' }}>
+                <Ionicons
+                  name={active ? solid : outline}
+                  size={22}
+                  color={active ? theme.onSecondaryContainer : theme.textMuted}
+                />
+              </View>
+              <Text
+                style={{
+                  fontSize: 12,
+                  fontWeight: active ? '700' : '500',
+                  letterSpacing: 0.2,
+                  color: active ? theme.onSecondaryContainer : theme.textMuted,
+                  marginTop: 6,
+                  marginBottom: 10,
+                }}
+              >
+                {route.name}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
 }
 
+/* ------------------------------ tab screens ------------------------------- */
+
 function StudentTabs() {
-  const options = useTabOptions();
   return (
-    <Tab.Navigator screenOptions={options}>
+    <Tab.Navigator screenOptions={{ headerShown: false, tabBar: M3TabBar }}>
       <Tab.Screen name="Home" component={StudentDashboard} />
       <Tab.Screen name="History" component={TransactionsScreen} />
       <Tab.Screen name="Profile" component={ProfileScreen} />
@@ -83,9 +143,8 @@ function StudentTabs() {
 }
 
 function AdminTabs() {
-  const options = useTabOptions();
   return (
-    <Tab.Navigator screenOptions={options}>
+    <Tab.Navigator screenOptions={{ headerShown: false, tabBar: M3TabBar }}>
       <Tab.Screen name="Dashboard" component={AdminDashboard} />
       <Tab.Screen name="Students" component={StudentsScreen} />
       <Tab.Screen name="Jobs" component={JobsScreen} />
@@ -94,6 +153,8 @@ function AdminTabs() {
     </Tab.Navigator>
   );
 }
+
+/* ---------------------------- biometric gate ------------------------------ */
 
 function BiometricGate({ children }) {
   const { user, biometricSupported, promptBiometric } = useAuth();
@@ -111,7 +172,7 @@ function BiometricGate({ children }) {
   if (!locked) return children;
 
   return (
-    <LinearGradient colors={theme.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.lockWrap}>
+    <LinearGradient colors={theme.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 28 }}>
         <View style={styles.lockGlass}>
           <View style={styles.lockIconWrap}>
@@ -127,8 +188,8 @@ function BiometricGate({ children }) {
             }}
           >
             <View style={styles.lockBtnInner}>
-              <Ionicons name="unlock-outline" size={17} color={palette.primaryDark} />
-              <Text style={styles.lockBtnText}>Unlock</Text>
+              <Ionicons name="unlock-outline" size={17} color={theme.mode === 'dark' ? '#DCD9FF' : '#1A1468'} />
+              <Text style={[styles.lockBtnText, { color: theme.mode === 'dark' ? '#DCD9FF' : '#1A1468' }]}>Unlock</Text>
             </View>
           </Pressable>
         </View>
@@ -187,7 +248,6 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  lockWrap: { flex: 1 },
   lockGlass: {
     width: '100%',
     backgroundColor: 'rgba(255, 255, 255, 0.14)',
@@ -196,7 +256,6 @@ const styles = StyleSheet.create({
     borderRadius: radius.xl,
     padding: 30,
     alignItems: 'center',
-    backdropFilter: 'blur(10px)',
   },
   lockIconWrap: {
     width: 64, height: 64, borderRadius: 22,
@@ -205,8 +264,8 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   lockTitle: { color: '#fff', fontSize: 22, fontWeight: '800', letterSpacing: -0.3 },
-  lockSub: { color: 'rgba(255,255,255,0.75)', fontSize: 13.5, marginTop: 6, textAlign: 'center' },
-  lockBtn: { marginTop: 20, backgroundColor: '#fff', borderRadius: radius.md, paddingVertical: 4, paddingHorizontal: 6 },
-  lockBtnInner: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 26 },
-  lockBtnText: { color: palette.primaryDark, fontWeight: '800', fontSize: 15, marginLeft: 8 },
+  lockSub: { color: 'rgba(255,255,255,0.75)', fontSize: 13.5, marginTop: 6, textAlign: 'center', lineHeight: 20 },
+  lockBtn: { marginTop: 20, backgroundColor: '#fff', borderRadius: radius.pill, paddingVertical: 4, paddingHorizontal: 6 },
+  lockBtnInner: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11, paddingHorizontal: 28 },
+  lockBtnText: { fontWeight: '800', fontSize: 15, marginLeft: 8 },
 });

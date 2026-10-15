@@ -5,11 +5,10 @@ import { View, Text, ScrollView, RefreshControl, StyleSheet } from 'react-native
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import {
-  Screen, Header, Card, Chip, TxnRow, EmptyState,
+  Screen, FadeIn, Header, Card, Chip, TxnRow, EmptyState,
 } from '../components/ui';
 import { api } from '../api';
 import { formatINR, monthLabel, asDate } from '../utils/format';
-import { palette } from '../theme';
 
 const FILTERS = [
   { key: 'all', label: 'All' },
@@ -17,7 +16,7 @@ const FILTERS = [
   { key: 'withdrawal', label: 'Withdrawals' },
 ];
 
-export default function TransactionsScreen({ route }) {
+export default function TransactionsScreen({ route, navigation }) {
   const { token, user } = useAuth();
   const { theme } = useTheme();
   const studentId = route.params?.studentId; // admin-only: view a specific student
@@ -62,6 +61,7 @@ export default function TransactionsScreen({ route }) {
 
   return (
     <Screen>
+      <FadeIn navigation={navigation}>
       <Header
         title="History"
         subtitle={studentId && user?.role === 'admin' ? 'Student ledger' : 'Your complete ledger'}
@@ -69,8 +69,8 @@ export default function TransactionsScreen({ route }) {
 
       <Card noPad style={styles.summary}>
         {[
-          { value: '+' + formatINR(earnings), label: 'Earned', color: palette.success },
-          { value: '-' + formatINR(withdrawals), label: 'Withdrawn', color: palette.danger },
+          { value: '+' + formatINR(earnings), label: 'Earned', color: theme.success },
+          { value: '-' + formatINR(withdrawals), label: 'Withdrawn', color: theme.danger },
           { value: formatINR(net), label: 'Net', color: theme.text },
         ].map((s, i) => (
           <View key={s.label} style={[styles.summaryCol, i > 0 && { borderLeftWidth: 1, borderColor: theme.border }]}>
@@ -90,7 +90,7 @@ export default function TransactionsScreen({ route }) {
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingBottom: 110 }}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={palette.primary} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.primary} />}
       >
         {groups.length === 0 ? (
           <EmptyState
@@ -109,6 +109,7 @@ export default function TransactionsScreen({ route }) {
           ))
         )}
       </ScrollView>
+      </FadeIn>
     </Screen>
   );
 }

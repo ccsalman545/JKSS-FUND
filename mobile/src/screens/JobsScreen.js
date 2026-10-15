@@ -6,7 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import {
-  Screen, Header, Card, Button, Input, IconButton,
+  Screen, FadeIn, Header, Card, Button, Input, IconButton,
   Sheet, ConfirmSheet, EmptyState,
 } from '../components/ui';
 import { api } from '../api';
@@ -14,7 +14,7 @@ import { formatINR, formatDate, asDate, sameMonth } from '../utils/format';
 import { palette } from '../theme';
 import { COMMITTEE_SHARE_PCT, STUDENT_SHARE_PCT } from '../config';
 
-export default function JobsScreen() {
+export default function JobsScreen({ navigation }) {
   const { token } = useAuth();
   const { theme } = useTheme();
   const [jobs, setJobs] = useState([]);
@@ -72,11 +72,12 @@ export default function JobsScreen() {
 
   return (
     <Screen>
+      <FadeIn navigation={navigation}>
       <Header
         title="Jobs"
         subtitle={`${jobs.length} total · ${formatINR(totalCollected)} collected`}
         right={
-          <Button label="Add job" icon="add" size="sm" variant="accent" onPress={() => { setErr(''); setShowAdd(true); }} style={{ marginLeft: 12 }} />
+          <Button label="Add job" icon="add" size="sm" variant="container" onPress={() => { setErr(''); setShowAdd(true); }} style={{ marginLeft: 12 }} />
         }
       />
 
@@ -86,11 +87,11 @@ export default function JobsScreen() {
           <Text style={[styles.summaryLabel, { color: theme.textMuted }]}>All time</Text>
         </View>
         <View style={[styles.summaryCol, { borderLeftWidth: 1, borderColor: theme.border }]}>
-          <Text style={[styles.summaryValue, { color: palette.success }]}>{formatINR(monthCollected)}</Text>
+          <Text style={[styles.summaryValue, { color: theme.success }]}>{formatINR(monthCollected)}</Text>
           <Text style={[styles.summaryLabel, { color: theme.textMuted }]}>This month</Text>
         </View>
         <View style={[styles.summaryCol, { borderLeftWidth: 1, borderColor: theme.border }]}>
-          <Text style={[styles.summaryValue, { color: palette.primary }]}>{studentCount}</Text>
+          <Text style={[styles.summaryValue, { color: theme.primary }]}>{studentCount}</Text>
           <Text style={[styles.summaryLabel, { color: theme.textMuted }]}>Students sharing</Text>
         </View>
       </Card>
@@ -99,7 +100,7 @@ export default function JobsScreen() {
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingBottom: 110 }}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={palette.primary} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.primary} />}
       >
         {jobs.length === 0 ? (
           <EmptyState
@@ -112,8 +113,8 @@ export default function JobsScreen() {
             {jobs.map((j, i) => (
               <View key={j.id} style={[styles.jobCard, i < jobs.length - 1 && { borderBottomWidth: 1, borderColor: theme.border }]}>
                 <View style={styles.jobTop}>
-                  <View style={[styles.jobIcon, { backgroundColor: palette.primarySoft }]}>
-                    <Ionicons name="briefcase-outline" size={16} color={palette.primary} />
+                  <View style={[styles.jobIcon, { backgroundColor: theme.primarySoft }]}>
+                    <Ionicons name="briefcase-outline" size={16} color={theme.primary} />
                   </View>
                   <View style={{ flex: 1, marginHorizontal: 12 }}>
                     <Text style={[styles.jobName, { color: theme.text }]} numberOfLines={1}>{j.name}</Text>
@@ -123,7 +124,7 @@ export default function JobsScreen() {
                     <Text style={[styles.jobAmt, { color: theme.text }]}>{formatINR(j.amount)}</Text>
                     <IconButton
                       icon="trash-outline"
-                      tint={palette.danger}
+                      tint={theme.danger}
                       size={30}
                       style={{ marginTop: 4 }}
                       onPress={() => setToDelete(j)}
@@ -139,11 +140,11 @@ export default function JobsScreen() {
                 </View>
                 <View style={styles.splitValues}>
                   <Text style={[styles.splitVal, { color: theme.textMuted }]}>
-                    <Text style={{ color: palette.accent, fontWeight: '800' }}>● </Text>
+                    <Text style={{ color: theme.accent, fontWeight: '800' }}>● </Text>
                     Committee {formatINR(j.committeeShare)}
                   </Text>
                   <Text style={[styles.splitVal, { color: theme.textMuted }]}>
-                    <Text style={{ color: palette.primary, fontWeight: '800' }}>● </Text>
+                    <Text style={{ color: theme.primary, fontWeight: '800' }}>● </Text>
                     Students {formatINR(j.studentShare)}
                     {j.perStudent ? <Text style={{ color: theme.textFaint }}> · {formatINR(j.perStudent)}/head</Text> : null}
                   </Text>
@@ -153,6 +154,7 @@ export default function JobsScreen() {
           </Card>
         )}
       </ScrollView>
+      </FadeIn>
 
       <Sheet visible={showAdd} onClose={() => setShowAdd(false)} title="Add job">
         <Input
@@ -182,16 +184,16 @@ export default function JobsScreen() {
         />
 
         {amt > 0 ? (
-          <Card noPad style={[styles.preview, { backgroundColor: theme.mode === 'dark' ? 'rgba(99,102,241,0.1)' : palette.primarySoft }]}>
-            <Text style={[styles.previewTitle, { color: theme.mode === 'dark' ? '#A5B4FC' : palette.primaryDark }]}>Split preview</Text>
+          <Card noPad style={[styles.preview, { backgroundColor: theme.primarySoft }]}>
+            <Text style={[styles.previewTitle, { color: theme.onPrimaryContainer }]}>Split preview</Text>
             <View style={styles.previewRow}>
               <View>
-                <Text style={[styles.previewBig, { color: theme.mode === 'dark' ? '#FBBF24' : '#B45309' }]}>{formatINR(previewCommittee)}</Text>
+                <Text style={[styles.previewBig, { color: theme.accent }]}>{formatINR(previewCommittee)}</Text>
                 <Text style={[styles.previewSmall, { color: theme.textMuted }]}>Committee ({COMMITTEE_SHARE_PCT}%)</Text>
               </View>
               <View style={{ flex: 1 }} />
               <View style={{ textAlign: 'right' }}>
-                <Text style={[styles.previewBig, { color: theme.mode === 'dark' ? '#A5B4FC' : palette.primaryDark }]}>{formatINR(previewStudent)}</Text>
+                <Text style={[styles.previewBig, { color: theme.onPrimaryContainer }]}>{formatINR(previewStudent)}</Text>
                 <Text style={[styles.previewSmall, { color: theme.textMuted }]}>
                   Students ({STUDENT_SHARE_PCT}%) · {studentCount > 0 ? formatINR(previewPerStudent) + ' each' : 'add students first'}
                 </Text>

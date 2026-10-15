@@ -7,13 +7,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import {
-  Screen, Card, Button, Input, Sheet, Badge,
+  Screen, FadeIn, Card, Button, Input, Sheet, Badge,
 } from '../components/ui';
 import { formatINR } from '../utils/format';
 import { palette } from '../theme';
 import { APP_NAME, COMMITTEE_SHARE_PCT, STUDENT_SHARE_PCT } from '../config';
 
-export default function ProfileScreen() {
+export default function ProfileScreen({ navigation }) {
   const { user, logout, updateProfile, biometricSupported, changePassword } = useAuth();
   const { theme, isDark, toggle } = useTheme();
 
@@ -72,6 +72,7 @@ export default function ProfileScreen() {
 
   return (
     <Screen noPad>
+      <FadeIn navigation={navigation} style={{ flex: 1 }}>
       <LinearGradient colors={theme.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.gradientHeader}>
         <SafeAreaView edges={['top']}>
           <View style={styles.identity}>
@@ -95,7 +96,7 @@ export default function ProfileScreen() {
         <MenuCard>
           <MenuRow
             icon="person-outline"
-            tint={palette.info}
+            tint={theme.info}
             label="Display name"
             value={user?.full_name}
             onPress={() => { setName(user?.full_name || ''); setNameSheet(true); }}
@@ -104,7 +105,7 @@ export default function ProfileScreen() {
 
         <MenuCard>
           <View style={styles.switchRow}>
-            <MenuRowIcon icon="moon-outline" tint={palette.violet} />
+            <MenuRowIcon icon="moon-outline" tint={theme.violet} />
             <Text style={[styles.rowLabel, { color: theme.text }]}>Dark mode</Text>
             <Switch
               value={isDark}
@@ -118,15 +119,15 @@ export default function ProfileScreen() {
         <MenuCard>
           <MenuRow
             icon="finger-print"
-            tint={palette.success}
+            tint={theme.success}
             label="Biometric lock"
             value={biometricSupported ? 'Enabled on app open' : 'Not available on device'}
-            valueColor={biometricSupported ? palette.success : theme.textFaint}
+            valueColor={biometricSupported ? theme.success : theme.textFaint}
           />
           {user?.role === 'admin' ? (
             <MenuRow
               icon="key-outline"
-              tint={palette.accent}
+              tint={theme.accent}
               label="Change password"
               onPress={openPassword}
               last
@@ -136,8 +137,8 @@ export default function ProfileScreen() {
 
         <Card style={styles.about}>
           <View style={styles.aboutRow}>
-            <View style={[styles.aboutIcon, { backgroundColor: palette.primarySoft }]}>
-              <Ionicons name="information-circle-outline" size={18} color={palette.primary} />
+            <View style={[styles.aboutIcon, { backgroundColor: theme.primarySoft }]}>
+              <Ionicons name="information-circle-outline" size={18} color={theme.primary} />
             </View>
             <View style={{ flex: 1, marginLeft: 12 }}>
               <Text style={[styles.aboutName, { color: theme.text }]}>{APP_NAME} v3.0</Text>
@@ -150,6 +151,7 @@ export default function ProfileScreen() {
 
         <Button label="Log out" icon="log-out-outline" variant="danger" size="lg" onPress={logout} style={{ marginTop: 16 }} />
       </View>
+      </FadeIn>
 
       <Sheet visible={nameSheet} onClose={() => setNameSheet(false)} title="Edit name">
         <Input
@@ -178,7 +180,7 @@ export default function ProfileScreen() {
           style={{ marginBottom: 4 }}
         />
         {pwMsg ? (
-          <Text style={[styles.pwMsg, { color: pwMsg.type === 'success' ? palette.success : palette.danger }]}>
+          <Text style={[styles.pwMsg, { color: pwMsg.type === 'success' ? theme.success : theme.danger }]}>
             {pwMsg.text}
           </Text>
         ) : null}

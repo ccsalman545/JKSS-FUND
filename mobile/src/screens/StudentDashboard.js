@@ -6,12 +6,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import {
-  Screen, GradientCard, Button, SectionHeader, TxnRow, EmptyState,
-  Sheet, Input, Chip, IconButton,
+  Screen, FadeIn, GradientCard, Button, SectionHeader, TxnRow, EmptyState,
+  Sheet, Input, Chip,
 } from '../components/ui';
 import { api } from '../api';
 import { formatINR, timeGreeting, sameMonth } from '../utils/format';
-import { palette } from '../theme';
 
 const QUICK_AMOUNTS = [100, 200, 500];
 
@@ -61,15 +60,16 @@ export default function StudentDashboard({ navigation }) {
 
   return (
     <Screen>
+      <FadeIn navigation={navigation}>
       <View style={styles.headerRow}>
         <View style={{ flex: 1 }}>
           <Text style={[styles.greeting, { color: theme.textMuted }]}>{timeGreeting()},</Text>
           <Text style={[styles.name, { color: theme.text }]} numberOfLines={1}>{name}</Text>
         </View>
         <View
-          style={[styles.avatar, { backgroundColor: theme.mode === 'dark' ? 'rgba(99,102,241,0.2)' : palette.primarySoft }]}
+          style={[styles.avatar, { backgroundColor: theme.primarySoft }]}
         >
-          <Ionicons name="person" size={20} color={theme.mode === 'dark' ? '#A5B4FC' : palette.primaryDark} />
+          <Ionicons name="person" size={20} color={theme.onPrimaryContainer} />
         </View>
       </View>
 
@@ -119,11 +119,12 @@ export default function StudentDashboard({ navigation }) {
           txns.slice(0, 6).map((t, i) => <TxnRow key={t.id} txn={t} last={i === Math.min(txns.length, 6) - 1} />)
         )}
       </ScrollView>
+      </FadeIn>
 
       <Sheet visible={showWithdraw} onClose={() => setShowWithdraw(false)} title="Withdraw money">
-        <View style={[styles.withdrawAvail, { backgroundColor: theme.mode === 'dark' ? 'rgba(16,185,129,0.12)' : palette.successSoft }]}>
-          <Ionicons name="wallet-outline" size={16} color={theme.mode === 'dark' ? '#34D399' : '#059669'} />
-          <Text style={[styles.withdrawAvailText, { color: theme.mode === 'dark' ? '#34D399' : '#059669' }]}>
+        <View style={[styles.withdrawAvail, { backgroundColor: theme.successSoft }]}>
+          <Ionicons name="wallet-outline" size={16} color={theme.success} />
+          <Text style={[styles.withdrawAvailText, { color: theme.success }]}>
             Available: {formatINR(info.balance)}
           </Text>
         </View>

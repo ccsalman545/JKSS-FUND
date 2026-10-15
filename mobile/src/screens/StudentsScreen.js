@@ -5,15 +5,14 @@ import { View, Text, ScrollView, RefreshControl, StyleSheet } from 'react-native
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import {
-  Screen, Header, Card, Button, Input, Avatar, IconButton,
+  Screen, FadeIn, Header, Card, Button, Input, Avatar, IconButton,
   Sheet, ConfirmSheet, EmptyState,
 } from '../components/ui';
 import { api } from '../api';
 import { formatINR } from '../utils/format';
-import { palette } from '../theme';
 import { MAX_STUDENTS } from '../config';
 
-export default function StudentsScreen() {
+export default function StudentsScreen({ navigation }) {
   const { token } = useAuth();
   const { theme } = useTheme();
   const [students, setStudents] = useState([]);
@@ -67,11 +66,12 @@ export default function StudentsScreen() {
 
   return (
     <Screen>
+      <FadeIn navigation={navigation}>
       <Header
         title="Students"
         subtitle={`${students.length} of ${MAX_STUDENTS} seats used`}
         right={
-          <Button label="Add" icon="add" size="sm" variant="primary" onPress={() => { setErr(''); setShowAdd(true); }} style={{ marginLeft: 12 }} />
+          <Button label="Add" icon="add" size="sm" variant="container" onPress={() => { setErr(''); setShowAdd(true); }} style={{ marginLeft: 12 }} />
         }
       />
 
@@ -88,7 +88,7 @@ export default function StudentsScreen() {
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingBottom: 110 }}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={palette.primary} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.primary} />}
       >
         {filtered.length === 0 ? (
           <EmptyState
@@ -106,10 +106,10 @@ export default function StudentsScreen() {
                   <Text style={[styles.handle, { color: theme.textFaint }]} numberOfLines={1}>@{s.username}</Text>
                 </View>
                 <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={[styles.balance, { color: palette.success }]}>{formatINR(s.balance || 0)}</Text>
+                  <Text style={[styles.balance, { color: theme.success }]}>{formatINR(s.balance || 0)}</Text>
                   <IconButton
                     icon="trash-outline"
-                    tint={palette.danger}
+                    tint={theme.danger}
                     size={32}
                     style={{ marginTop: 4 }}
                     onPress={() => setToDelete(s)}
@@ -120,6 +120,7 @@ export default function StudentsScreen() {
           </Card>
         )}
       </ScrollView>
+      </FadeIn>
 
       <Sheet visible={showAdd} onClose={() => setShowAdd(false)} title="Add student">
         <Input

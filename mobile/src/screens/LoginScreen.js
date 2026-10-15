@@ -6,7 +6,7 @@ import { LinearGradient } from 'react-native-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import { Button, Input } from '../components/ui';
+import { Button, Input, FadeIn } from '../components/ui';
 import { APP_NAME } from '../config';
 
 export default function LoginScreen() {
@@ -50,6 +50,7 @@ export default function LoginScreen() {
         <View style={styles.deco1} />
         <View style={styles.deco2} />
 
+        <FadeIn>
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <View style={styles.brand}>
             <View style={styles.logo}>
@@ -98,9 +99,9 @@ export default function LoginScreen() {
             />
 
             {error ? (
-              <View style={[styles.errorBox, { backgroundColor: theme.mode === 'dark' ? 'rgba(244,63,94,0.12)' : '#FDE9ED' }]}>
-                <Ionicons name="alert-circle-outline" size={15} color="#F43F5E" />
-                <Text style={[styles.errorText, { color: theme.mode === 'dark' ? '#FB7185' : '#E11D48' }]}>{error}</Text>
+              <View style={[styles.errorBox, { backgroundColor: theme.dangerSoft }]}>
+                <Ionicons name="alert-circle-outline" size={15} color={theme.danger} />
+                <Text style={[styles.errorText, { color: theme.danger }]}>{error}</Text>
               </View>
             ) : null}
 
@@ -111,6 +112,7 @@ export default function LoginScreen() {
             10% of every job goes to the committee fund,{'\n'}90% is split equally among students.
           </Text>
         </ScrollView>
+        </FadeIn>
       </SafeAreaView>
     </LinearGradient>
   );

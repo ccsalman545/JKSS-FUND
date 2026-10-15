@@ -7,11 +7,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import {
-  Screen, Header, Card, GradientCard, StatTile, SectionHeader, Avatar, EmptyState,
+  Screen, FadeIn, Header, Card, GradientCard, StatTile, SectionHeader, Avatar, EmptyState,
 } from '../components/ui';
 import { api } from '../api';
 import { formatINR, formatDate, asDate } from '../utils/format';
-import { palette } from '../theme';
 
 export default function AdminDashboard({ navigation }) {
   const { user } = useAuth();
@@ -31,6 +30,7 @@ export default function AdminDashboard({ navigation }) {
 
   return (
     <Screen>
+      <FadeIn navigation={navigation}>
       <Header
         title="Dashboard"
         subtitle={today}
@@ -57,10 +57,10 @@ export default function AdminDashboard({ navigation }) {
       </GradientCard>
 
       <View style={styles.statsGrid}>
-        <StatTile icon="people-outline" label="Students" value={String(stats.totalStudents)} tint={palette.info} style={styles.tile} />
-        <StatTile icon="briefcase-outline" label="Jobs added" value={String(stats.totalJobs)} tint={palette.primary} style={styles.tile} />
-        <StatTile icon="wallet-outline" label="Total collected" value={formatINR(stats.totalJobsAmount)} tint={palette.success} style={styles.tile} />
-        <StatTile icon="safe" label="Committee fund" value={formatINR(committeeBalance)} tint={palette.accent} style={styles.tile} />
+        <StatTile icon="people-outline" label="Students" value={String(stats.totalStudents)} tint={theme.info} style={styles.tile} />
+        <StatTile icon="briefcase-outline" label="Jobs added" value={String(stats.totalJobs)} tint={theme.primary} style={styles.tile} />
+        <StatTile icon="wallet-outline" label="Total collected" value={formatINR(stats.totalJobsAmount)} tint={theme.success} style={styles.tile} />
+        <StatTile icon="safe" label="Committee fund" value={formatINR(committeeBalance)} tint={theme.accent} style={styles.tile} />
       </View>
 
       <View style={styles.quickRow}>
@@ -101,8 +101,8 @@ export default function AdminDashboard({ navigation }) {
               const shown = Math.min(jobs.length, 4);
               return (
                 <View key={j.id} style={[styles.jobInner, i < shown - 1 && { borderBottomWidth: 1, borderColor: theme.border }]}>
-                  <View style={[styles.jobIcon, { backgroundColor: palette.primarySoft }]}>
-                    <Ionicons name="briefcase-outline" size={17} color={palette.primary} />
+                  <View style={[styles.jobIcon, { backgroundColor: theme.primarySoft }]}>
+                    <Ionicons name="briefcase-outline" size={17} color={theme.primary} />
                   </View>
                   <View style={{ flex: 1, marginHorizontal: 12 }}>
                     <Text style={[styles.jobName, { color: theme.text }]} numberOfLines={1}>{j.name}</Text>
@@ -117,6 +117,7 @@ export default function AdminDashboard({ navigation }) {
           </Card>
         )}
       </ScrollView>
+      </FadeIn>
     </Screen>
   );
 }
