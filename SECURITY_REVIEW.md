@@ -450,7 +450,8 @@ node test/accounting.test.js     # 31 passed, 0 failed  paise math
 node test/api.mock.test.js       # 37 passed, 0 failed  data layer + username login
 
 cd tools/provision
-node test/plan.test.js           # 43 passed, 0 failed  roster/mapping/migration/hold/docs-vs-CLI
+node test/plan.test.js           # 51 passed, 0 failed  roster/mapping/migration/hold/frozen (D-1)/docs-vs-CLI
+node test/apply.test.js          # 4 passed, 0 failed   D-1 through the real apply path (Firebase stubbed)
 node test/passwords.test.js      # 15 passed, 0 failed  CSPRNG + credentials file
 
 # --- emulator suites (need Java 21+; throwaway emulators, no production access) ---
@@ -613,6 +614,12 @@ real-money movement on the current architecture.
   is reset, no record is migrated, until each is reviewed (`docs/USERNAME_LOGIN.md`
   §7.2). An explicit `"hold": true` + `"holdReason"` in `roster.json` blocks
   creation even without a legacy profile.
+  **Frozen (decision D-1):** a held legacy profile, a profile keyed to a student who
+  is not being created, and an ambiguous candidate are never backfilled with
+  `txnSeq: 0`; `apply` enforces this before any write. Residual risk: this is a tool
+  guard, not a rules guard. After the rules deploy, a frozen legacy document that
+  already has `txnSeq` can still be changed by its holder who signs in with the legacy
+  email. Closing that needs a separate, reviewed rules change.
 - **iOS / Hosting** — out of scope per the task.
 - **`removedAt` tombstones are never un-set** — re-adding a removed student
   requires a fresh identity (or console edit). Product decision.

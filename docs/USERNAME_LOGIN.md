@@ -373,6 +373,25 @@ their plan status is `create` or `exists`, with no legacy match, no ambiguity
 and no roster hold. `apply` creates only those students and reports the held
 ones.
 
+**Frozen profiles (decision D-1, decided 2026-10-15).** A profile is **frozen** when
+it is any of these:
+
+* the legacy identity of a roster student (matched in §7.1), held or not;
+* keyed by the identifier of a student who is not being created (a roster hold);
+* a candidate in an ambiguous review (a blocking match).
+
+A frozen profile is **never** given `txnSeq: 0` by the backfill, even when it lacks the
+field. The planner lists it under `FROZEN` with its reason. `apply` checks the backfill
+list before any write (`backfillTargets`), and it refuses to run if a frozen id appears
+there. Eligible students' own profiles and unmatched former profiles keep the normal
+backfill. Covered by `tools/provision/test/plan.test.js` (D-1 checks) and
+`tools/provision/test/apply.test.js` (the real `apply` path, with Firebase stubbed).
+
+**Residual risk.** The freeze is enforced by the tool, not by the rules. After the rules
+are deployed (§8 step 7), a frozen legacy document that already has an integer `txnSeq`
+can still be changed by its holder, if they sign in with the legacy email. Closing that
+needs a separate, reviewed rules change.
+
 **How the hold list works (two mechanisms, both enforced in `apply`):**
 
 | Mechanism | How it is set | What it does |
@@ -401,8 +420,8 @@ only after the review checklist below is complete.
 | **C. Stay on the real email** | Available | The login form accepts an email, so the old profile keeps working and no data moves. Record the link with `legacyIdentifier`. |
 | **D. Fresh identity via `ignoreLegacy`** | **Not chosen; not recommended** | Creates a second profile beside the legacy one. That is the duplicate and orphan risk this plan exists to prevent. It needs explicit approval per student. |
 
-> Step 6 of §8 also backfills `txnSeq: 0` on held legacy documents unless decision
-> D-1 changes that. Read it before running `apply`.
+> Step 6 of §8 backfills `txnSeq: 0` only on profiles that are not frozen. Held legacy
+> documents are frozen (decision D-1, below). Read §8 before running `apply`.
 >
 > Naming note: an earlier draft of this runbook used the letter **B** for the
 > `ignoreLegacy` route. The letter B now means *hold back*, which is the decision
@@ -477,7 +496,7 @@ approval, and every rollback.
 | 3 | Run the production `plan` (read-only) and review the full report | **Read only** | report reviewed, live ruleset recorded |
 | 4 | Keep legacy-held students on hold (Option B) | No | held list confirmed and recorded in `roster.json` |
 | 5 | Verify the admin profiles | **Read only** | both admin docs as expected (otherwise stop) |
-| 6 | `txnSeq: 0` backfill + eligible-student provisioning | **Yes — writes** | written approval; decision D-1 answered |
+| 6 | `txnSeq: 0` backfill + eligible-student provisioning | **Yes — writes** | written approval; the FROZEN list reviewed |
 | 7 | Deploy the audited Firestore rules | **Yes — production rules** | every prerequisite ticked; written approval; rollback baseline saved |
 | 8 | Build the APK and run a controlled smoke test | Yes, controlled | APK built from the merge commit; smoke checklist passed |
 
@@ -524,7 +543,10 @@ Review the **complete** report, not only the summary:
    reasons, balance, `txnCount`), hold and notes.
 2. `needs MANUAL REVIEW` (must be 0, or each entry explicitly resolved) and the
    weak name-only matches (warnings only, never auto-linked).
-3. The `txnSeq:0` backfill list: **every** id, including held legacy documents.
+3. The `txnSeq:0` backfill list, and the **FROZEN** list. Frozen profiles are held
+   legacy documents (and the documents of students on a roster hold, and any
+   ambiguous candidates). They are excluded from the backfill and listed with their
+   reasons. Confirm that every frozen id is one you expect.
 4. The admin-profile section: both admin documents, both preserved.
 5. Unmatched profiles (former students): listed, never touched.
 6. `liveJobs` and `liveActiveJobs`: how many jobs use legacy-keyed allocations
@@ -572,20 +594,18 @@ balances exactly as they are, and leave the old document untouched.
 
 ### Step 6 — `txnSeq: 0` backfill and eligible-student provisioning (approval required)
 
-**Decision D-1 (owner must answer before this step):**
-`apply` backfills `txnSeq: 0` on **every** profile that lacks it. That includes held
-legacy documents. The rules require an integer `txnSeq` before a withdrawal can
-be written, so once the rules are live a backfilled legacy document can withdraw if
-its holder signs in with that email.
+**Decision D-1 (decided and implemented):** `apply` backfills `txnSeq: 0` only on
+profiles that are **not frozen**. Frozen profiles are held legacy documents, documents
+of students on a roster hold, and ambiguous candidates. A held record stays exactly as
+it is until it is reviewed. The tool checks this before any write (`backfillTargets`),
+and refuses to run if a frozen id reaches the backfill list.
 
-* **(a) As coded:** backfill everything, held documents included. The hold stops
-  provisioning and migration only.
-* **(b) Recommended:** exclude held legacy documents from the backfill, so a held
-  record stays frozen until it is reviewed. This needs a small code change first and
-  its own review. Until it is merged, do not run this step with held documents on
-  the backfill list.
+**Residual risk:** this protection is in the tool, not in the rules. After step 7, a
+frozen legacy document that already has an integer `txnSeq` can still be changed by its
+holder, if they sign in with the legacy email. Closing that would need a separate,
+reviewed rules change, which this order does not include.
 
-Run only after written approval, with D-1 answered:
+Run only after written approval:
 
 ```bash
 node provision.js apply --project jkss-fund --confirm-project jkss-fund \
@@ -602,8 +622,7 @@ After it finishes:
 * Hand each temporary password to its student privately, then delete the file
   (§4.4).
 * Re-run `plan`. Expect `students to CREATE 0`, the `txnSeq:0 backfills required`
-  list empty (or, under (b), containing only the held documents), and the held count
-  unchanged.
+  list empty, the FROZEN list unchanged, and the held count unchanged.
 * Re-run `apply --apply`. Expect `created 0` (the run is idempotent).
 
 Rollback: the report lists every record this step created. Removing any of them
@@ -618,8 +637,8 @@ the rules' starting counter, so it is left in place. No money moved in this step
       CI job (rules unit tests) is green. Deploy from a clean checkout of that commit,
       never from a dirty tree.
 - [ ] Step 5 passed: `users/thrikkakarajkss@gmail.com` exists with `role: admin`.
-- [ ] Step 6 complete: the plan's backfill list is empty (or contains only the held
-      documents, under decision D-1(a)).
+- [ ] Step 6 complete: the plan's backfill list is empty. Frozen held documents are
+      listed under FROZEN and are not on the backfill list (decision D-1).
 - [ ] Every user document has an integer `balancePaise` (checked in the console).
       The withdrawal path requires it.
 - [ ] The console Indexes tab was reviewed, and any change in `firestore.indexes.json`
@@ -686,7 +705,8 @@ change only at step 7, and the held students change only through §7.2.
 | `mobile/test/identity.test.js` | local + CI | **63 passed, 0 failed** — normalization, collisions, identifier mapping, password policy, 20k-input fuzz |
 | `mobile/test/accounting.test.js` | local + CI | **31 passed, 0 failed** — paise math unchanged (the money invariants) |
 | `mobile/test/api.mock.test.js` | local + CI | **37 passed, 0 failed** — username login (real `auth/*` error codes), no-enumeration error text, authorization gate, ledger identity, all transaction flows |
-| `tools/provision/test/plan.test.js` | local + CI | **43 passed, 0 failed** — roster-hold validation and enforcement (incl. the explicit hold on a legacy-matched student),  roster → username, collision rules, ambiguity/weak-match handling, held-back students, admin preservation, safety gates, CLI parsing, **docs↔code mapping drift**, and **docs↔CLI drift** (every command/flag printed in these docs must exist in the tool) |
+| `tools/provision/test/plan.test.js` | local + CI | **51 passed, 0 failed** — includes the D-1 frozen-profile checks; roster-hold validation and enforcement (incl. the explicit hold on a legacy-matched student),  roster → username, collision rules, ambiguity/weak-match handling, held-back students, admin preservation, safety gates, CLI parsing, **docs↔code mapping drift**, and **docs↔CLI drift** (every command/flag printed in these docs must exist in the tool) |
+| `tools/provision/test/apply.test.js` | local + CI | **4 passed, 0 failed** — D-1 through the real `apply` path (Firebase stubbed): a held legacy profile gets no Auth account, no profile and no `txnSeq`; eligible and former profiles are still backfilled; a roster hold freezes too |
 | `tools/provision/test/passwords.test.js` | local + CI | **15 passed, 0 failed** — CSPRNG passwords (20k uniqueness), unambiguous alphabet, policy compliance, 0600 credentials file, never-overwrite |
 | `firebase/test/rules.test.js` | CI (`Firestore rules`, emulator) | **89 passed, 0 failed** in the production rules engine (14 new synthetic-identifier scenarios: pre-authorization, unauthorized-account lockout, withdrawals/credits/reversals with synthetic ids, no rules loosening) |
 | `tools/provision/test/emulator.test.js` | CI (`provisioning-e2e`, Auth+Firestore emulators) | **31 passed, 0 failed** — a dry run creates no Auth user and touches no document, 23 accounts created idempotently, admin account+password and both admin docs preserved, balances/ledgers byte-identical, no plaintext password in Firestore, valid/invalid password sign-in, unauthorized student has no profile, reset-password, identity migration with backup, safety gates |
@@ -696,7 +716,7 @@ Exact commands (also in `SECURITY_REVIEW.md` §5):
 ```bash
 # Node suites (no Java needed)
 cd mobile            && node test/identity.test.js && node test/accounting.test.js && node test/api.mock.test.js
-cd tools/provision   && node test/plan.test.js && node test/passwords.test.js
+cd tools/provision   && node test/plan.test.js && node test/apply.test.js && node test/passwords.test.js
 
 # Emulator suites (Java 21+; nothing touches the real project)
 cd firebase
