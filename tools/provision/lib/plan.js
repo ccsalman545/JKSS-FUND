@@ -75,12 +75,21 @@ function buildRoster(rosterJson) {
     if (typeof s === 'string') return { index: i, name: s, username: null, legacyIdentifier: null, ignoreLegacy: false };
     if (!s || typeof s !== 'object') throw new Error('roster entry ' + (i + 1) + ' is not an object');
     if (!s.name) throw new Error('roster entry ' + (i + 1) + ' has no "name"');
+    if (s.hold !== undefined && typeof s.hold !== 'boolean') {
+      throw new Error('roster entry "' + s.name + '": "hold" must be true or false');
+    }
+    const holdReason = s.holdReason != null ? String(s.holdReason).trim() : '';
+    if (s.hold === true && !holdReason) {
+      throw new Error('roster entry "' + s.name + '" is on hold but has no "holdReason" (say why, e.g. "legacy balance under review")');
+    }
     return {
       index: i,
       name: String(s.name),
       username: s.username != null ? String(s.username) : null,
       legacyIdentifier: s.legacyIdentifier != null ? String(s.legacyIdentifier).toLowerCase().trim() : null,
       ignoreLegacy: s.ignoreLegacy === true,
+      hold: s.hold === true,
+      holdReason: s.hold === true ? holdReason : null,
       note: s.note != null ? String(s.note) : null,
     };
   });
@@ -354,6 +363,19 @@ function buildPlan({ roster, live = {}, projectId = null, domain = STUDENT_EMAIL
       }
     }
 
+    // ---- Explicit roster hold (decided by a human) -------------------------
+    // Independent of the legacy/ambiguity checks: a held student is NEVER
+    // created, even when there is no existing profile at all. The reason is
+    // mandatory so the hold is always self-explanatory in the plan report.
+    if (student.hold) {
+      entry.hold = { reason: student.holdReason };
+      entry.createAllowed = false;
+      if (entry.status === 'create' || entry.status === 'add-profile') entry.status = 'held';
+      entry.actions.push('HELD — roster hold (nothing will be created for this student)');
+      entry.notes.push('Roster hold: ' + student.holdReason + '. Remove "hold" from roster.json only ' +
+        'after the review in docs/USERNAME_LOGIN.md §7 is complete.');
+    }
+
     // ---- Ambiguous mapping = blocking review ------------------------------
     const blocker = blockingByUsername.get(student.username);
     if (blocker) {
@@ -383,7 +405,8 @@ function buildPlan({ roster, live = {}, projectId = null, domain = STUDENT_EMAIL
     toCreateProfile: students.filter((s) => s.createAllowed && s.actions.includes('create-profile')).length,
     profileAlreadyExist: students.filter((s) => !!s.profile).length,
     needsReview: students.filter((s) => s.status === 'needs-review').length,
-    heldForMigration: students.filter((s) => !s.createAllowed && s.status !== 'needs-review').length,
+    heldForMigration: students.filter((s) => !s.createAllowed && !!s.legacyMatch && s.status !== 'needs-review').length,
+    rosterHold: students.filter((s) => !!s.hold).length,
     toCreate: students.filter((s) => s.createAllowed).length,
     weakMatches: weak.length,
     txnSeqBackfillCount: txnSeqBackfill.length,

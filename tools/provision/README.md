@@ -106,7 +106,7 @@ runbook, the migration options, and the manual deployment checklist.
 
 | Path | Committed? | Notes |
 |---|---|---|
-| `roster.json` | yes | Names only — **never add student emails**; optional `username`, `legacyIdentifier`, `ignoreLegacy` |
+| `roster.json` | yes | Names only — **never add student emails**; optional `username`, `legacyIdentifier`, `ignoreLegacy`, and `hold` + `holdReason` (an explicit hold: the student is never created until the hold is removed) |
 | `credentials.json` | **no** (git-ignored) | Generated passwords, mode 0600 — distribute, then delete/park in a password manager |
 | `reports/*.json` | **no** (git-ignored) | Plan/apply reports (contain live ids/balances) |
 | `backups/*.json` | **no** (git-ignored) | Pre-migration document+ledger backups |

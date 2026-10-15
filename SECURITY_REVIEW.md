@@ -447,7 +447,7 @@ node test/accounting.test.js     # 31 passed, 0 failed  paise math
 node test/api.mock.test.js       # 37 passed, 0 failed  data layer + username login
 
 cd tools/provision
-node test/plan.test.js           # 39 passed, 0 failed  roster/mapping/migration/docs-vs-CLI
+node test/plan.test.js           # 43 passed, 0 failed  roster/mapping/migration/hold/docs-vs-CLI
 node test/passwords.test.js      # 15 passed, 0 failed  CSPRNG + credentials file
 
 # --- emulator suites (need Java 21+; throwaway emulators, no production access) ---
@@ -607,6 +607,11 @@ real-money movement on the current architecture.
   (`root-snapshots/`), except `app. jsx`, which was byte-identical to `app` and was
   removed. The superseded snapshots had their default credentials redacted; the
   originals are at base commit `0f362d9`.
+- **Real-email legacy profiles — ON HOLD (owner decision, Option B).** Students
+  whose existing profile is matched are held: no account is created, no password
+  is reset, no record is migrated, until each is reviewed (`docs/USERNAME_LOGIN.md`
+  §7.2). An explicit `"hold": true` + `"holdReason"` in `roster.json` blocks
+  creation even without a legacy profile.
 - **iOS / Hosting** — out of scope per the task.
 - **`removedAt` tombstones are never un-set** — re-adding a removed student
   requires a fresh identity (or console edit). Product decision.

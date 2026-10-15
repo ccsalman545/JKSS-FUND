@@ -357,13 +357,53 @@ profiles and orphaned balances).
 5. A student with a matched existing profile is **held back**: their new
    username account is *not* created until you decide.
 
-### 7.2 Your three options (per held student)
+### 7.2 Decision: students with a real-email profile stay ON HOLD (Option B)
 
-| Option | When it is right | What you do |
+**Decision (owner, 2026-10-15): Option B — hold back.** Every student whose
+existing profile is matched (§7.1) stays on the hold list. Until the owner has
+reviewed that student's identity, balance, ledger and active historical jobs,
+the tool:
+
+* does **not** create their account or profile (no duplicate identity);
+* does **not** reset or print any password for them;
+* does **not** migrate or modify any of their records.
+
+**Students whose mapping is verified stay eligible** for normal provisioning:
+their plan status is `create` or `exists`, with no legacy match, no ambiguity
+and no roster hold. `apply` creates only those students and reports the held
+ones.
+
+**How the hold list works (two mechanisms, both enforced in `apply`):**
+
+| Mechanism | How it is set | What it does |
 |---|---|---|
-| **A. Re-key (recommended)** | The profile holds a balance/ledger, or you want one identity from now on | `migrate-identity` below — copies the profile + the whole ledger to the username identity, transfers the balance with a `transfer` ledger entry, zeroes and **tombstones** the old document (never deletes it), and writes a timestamped JSON backup first |
-| **B. Fresh identity, old profile left alone** | The old profile is empty/orphaned and you accept that past jobs still allocate to it | Add `"ignoreLegacy": true` to that student in `roster.json` (an explicit, recorded human decision), re-plan, then `apply` |
-| **C. Leave the student on their real email for now** | The student already signs in with an email they still control and you want no data movement | Do nothing: the login form accepts an email, so a legacy profile keeps working. Add a `"legacyIdentifier"` in `roster.json` so the planner links them in future reports |
+| **Automatic** (from the planner) | A matched existing profile (§7.1) | The student is `HELD BACK` (`migration-review` or `link-legacy`). No flag is needed. |
+| **Explicit** (a recorded decision) | `"hold": true, "holdReason": "…"` on the student in `roster.json` | The student is `held`. The reason is mandatory. The hold blocks creation even when no legacy profile exists. |
+
+`apply` skips every held student, the credentials file never receives a
+password for one, and the plan prints the hold reason. Remove an explicit hold
+only after the review checklist below is complete.
+
+**Review checklist (before lifting any hold):** for each held student,
+1. **Identity** — confirm by hand that the legacy document (`users/<real email>`) belongs to this student.
+2. **Balance** — the plan's `balancePaise` matches the fund's own records.
+3. **Ledger** — the plan's `txnCount` matches the history; no duplicated entries.
+4. **Active historical jobs** — list the live jobs whose `allocations` use the legacy id (the plan shows `liveActiveJobs`). If any of them could be reversed later, plan the legacy-lien reconciliation in §7.4.
+5. **Record the decision** — update the `holdReason` or remove the hold in `roster.json`, commit it, and re-plan.
+6. **Only then**, and only per student with the owner's approval, use Option A (§7.3) with its backup.
+
+**Options for the held students (for reference):**
+
+| Option | Status | What it means |
+|---|---|---|
+| **B. Hold back** | **In force** | Nothing is created, changed or migrated for the student. (See above.) |
+| **A. Re-key with backup** | Not started; needs review | `migrate-identity` (§7.3) copies the profile and whole ledger to the username identity, moves the balance with a ledger entry, and tombstones the old document (never deletes it). |
+| **C. Stay on the real email** | Available | The login form accepts an email, so the old profile keeps working and no data moves. Record the link with `legacyIdentifier`. |
+| **D. Fresh identity via `ignoreLegacy`** | **Not chosen; not recommended** | Creates a second profile beside the legacy one. That is the duplicate and orphan risk this plan exists to prevent. It needs explicit approval per student. |
+
+> Naming note: an earlier draft of this runbook used the letter **B** for the
+> `ignoreLegacy` route. The letter B now means *hold back*, which is the decision
+> above. The `ignoreLegacy` route is labelled **D** so the two can't be confused.
 
 ### 7.3 Option A — the exact command
 
@@ -433,6 +473,12 @@ real project, and each one is reversible.**
    Expected: all four checks `PASS` (or run it against the Auth emulator).
 3. **Provision the roster** (dry run, read the report, then apply)
 
+   **Gate before any real `apply`:** the held list is reviewed (§7.2). Every
+   `HELD BACK`, `migration-review`, `link-legacy`, `needs-review` and
+   `held` student in the plan has been looked at by the owner, and each hold
+   still has its reason in `roster.json`. Lifting a hold is a separate, recorded
+   change, not part of this step.
+
    ```bash
    node tools/provision/provision.js plan  --project jkss-fund --credentials <admin.json>
    node tools/provision/provision.js apply --project jkss-fund --confirm-project jkss-fund \
@@ -470,7 +516,7 @@ real project, and each one is reversible.**
 | `mobile/test/identity.test.js` | local + CI | **63 passed, 0 failed** — normalization, collisions, identifier mapping, password policy, 20k-input fuzz |
 | `mobile/test/accounting.test.js` | local + CI | **31 passed, 0 failed** — paise math unchanged (the money invariants) |
 | `mobile/test/api.mock.test.js` | local + CI | **37 passed, 0 failed** — username login (real `auth/*` error codes), no-enumeration error text, authorization gate, ledger identity, all transaction flows |
-| `tools/provision/test/plan.test.js` | local + CI | **39 passed, 0 failed** — roster → username, collision rules, ambiguity/weak-match handling, held-back students, admin preservation, safety gates, CLI parsing, **docs↔code mapping drift**, and **docs↔CLI drift** (every command/flag printed in these docs must exist in the tool) |
+| `tools/provision/test/plan.test.js` | local + CI | **43 passed, 0 failed** — roster-hold validation and enforcement (incl. the explicit hold on a legacy-matched student),  roster → username, collision rules, ambiguity/weak-match handling, held-back students, admin preservation, safety gates, CLI parsing, **docs↔code mapping drift**, and **docs↔CLI drift** (every command/flag printed in these docs must exist in the tool) |
 | `tools/provision/test/passwords.test.js` | local + CI | **15 passed, 0 failed** — CSPRNG passwords (20k uniqueness), unambiguous alphabet, policy compliance, 0600 credentials file, never-overwrite |
 | `firebase/test/rules.test.js` | CI (`Firestore rules`, emulator) | **89 passed, 0 failed** in the production rules engine (14 new synthetic-identifier scenarios: pre-authorization, unauthorized-account lockout, withdrawals/credits/reversals with synthetic ids, no rules loosening) |
 | `tools/provision/test/emulator.test.js` | CI (`provisioning-e2e`, Auth+Firestore emulators) | **31 passed, 0 failed** — a dry run creates no Auth user and touches no document, 23 accounts created idempotently, admin account+password and both admin docs preserved, balances/ledgers byte-identical, no plaintext password in Firestore, valid/invalid password sign-in, unauthorized student has no profile, reset-password, identity migration with backup, safety gates |

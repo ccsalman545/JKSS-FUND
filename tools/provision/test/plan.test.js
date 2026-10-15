@@ -208,6 +208,45 @@ check('plan: explicit ignoreLegacy releases the hold and records the decision', 
   eq(p.students[0].createAllowed, true);
   ok(String(p.students[0].reviewed).includes('ignoreLegacy'));
 });
+check('roster hold: the hold flag and its reason are validated', () => {
+  assertThrows(() => planLib.buildRoster({ students: [{ name: 'Anwar', hold: true }] }), /holdReason/);
+  assertThrows(() => planLib.buildRoster({ students: [{ name: 'Anwar', hold: true, holdReason: '   ' }] }), /holdReason/);
+  assertThrows(() => planLib.buildRoster({ students: [{ name: 'Anwar', hold: 'yes', holdReason: 'x' }] }), /true or false/);
+  const ok1 = planLib.buildRoster({ students: [{ name: 'Anwar', hold: true, holdReason: '  legacy review  ' }] });
+  eq(ok1[0].hold, true);
+  eq(ok1[0].holdReason, 'legacy review', 'reason is trimmed');
+  eq(planLib.buildRoster({ students: [{ name: 'Bilal' }] })[0].hold, false, 'default is not held');
+});
+check('roster hold: a held student is never creatable, even with NO existing profile', () => {
+  const r = planLib.buildRoster({ students: [{ name: 'Anwar', hold: true, holdReason: 'awaiting review' }, { name: 'Bilal' }] });
+  const p = planLib.buildPlan({ roster: r, live: { authUsers: [], profiles: [], jobs: [] } });
+  const held = p.students.find((s) => s.name === 'Anwar');
+  const free = p.students.find((s) => s.name === 'Bilal');
+  eq(held.createAllowed, false);
+  eq(held.status, 'held');
+  eq(held.hold.reason, 'awaiting review');
+  ok(held.actions.join(' ').includes('HELD — roster hold'), 'plan must say why');
+  eq(free.createAllowed, true, 'verified, un-held students stay eligible');
+  eq(free.status, 'create');
+  eq(p.summary.toCreate, 1);
+  eq(p.summary.rosterHold, 1);
+  eq(p.summary.heldForMigration, 0, 'a roster hold is not a legacy hold');
+});
+check('roster hold: on a legacy-matched student the migration detail is kept', () => {
+  const r = planLib.buildRoster({ students: [{ name: 'Salman', hold: true, holdReason: 'Review legacy balance' }] });
+  const p = planLib.buildPlan({ roster: r, live });
+  const s = p.students[0];
+  eq(s.createAllowed, false);
+  eq(s.status, 'migration-review');
+  eq(s.legacyProfileId, 'old.student@gmail.com');
+  eq(s.legacyMatch.balancePaise, 12345);
+  eq(s.hold.reason, 'Review legacy balance');
+  eq(p.summary.heldForMigration, 1);
+  eq(p.summary.rosterHold, 1);
+});
+check('roster hold: the committed roster.json holds nobody by default', () => {
+  eq(roster.filter((r) => r.hold).length, 0, 'the hold list is populated from the review, not guessed');
+});
 check('plan: both admin documents are reported and preserved', () => {
   eq(plan.summary.adminProfiles, 2);
   eq(plan.adminProfiles.map((p) => p.id).join(','), 'thrikkakarajkss,thrikkakarajkss@gmail.com');

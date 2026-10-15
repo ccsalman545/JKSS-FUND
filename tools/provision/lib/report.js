@@ -51,6 +51,7 @@ function renderPlan(plan) {
   lines.push('students to CREATE ............... ' + s.toCreate);
   lines.push('students needing MANUAL REVIEW ... ' + s.needsReview + ' (blocking)');
   lines.push('students held for MIGRATION ...... ' + s.heldForMigration + ' (existing profile)');
+  lines.push('students on ROSTER HOLD .......... ' + (s.rosterHold || 0) + ' (roster.json "hold": true)');
   lines.push('weak name-only matches (warn) .... ' + s.weakMatches);
   lines.push('txnSeq:0 backfills required ...... ' + s.txnSeqBackfillCount);
   lines.push('admin profiles PRESERVED ......... ' + (plan.adminProfiles || []).length);
