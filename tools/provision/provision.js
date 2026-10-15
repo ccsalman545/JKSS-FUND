@@ -51,6 +51,10 @@ const PRODUCTION_PROJECT = 'jkss-fund'; // never allow silent writes here
 
 /* ------------------------------------------------------------------- args -- */
 
+// Commands the CLI answers to (kept in one place: `help` lists them, the docs
+// consistency test in test/plan.test.js asserts the docs only ever use these).
+const COMMANDS = ['plan', 'apply', 'verify-identifier', 'reset-password', 'migrate-identity', 'help'];
+
 const KNOWN_FLAGS = {
   '--roster': 'value',
   '--project': 'value',
@@ -108,6 +112,7 @@ function usage() {
     '  reset-password --username <u>            give one student a new random temporary password',
     '  migrate-identity --legacy <id> --username <u>',
     '                                          re-key ONE legacy (real-email) identity to a username',
+    '  help                                    this text',
     '',
     'Options:',
     '  --roster <file>            roster JSON (default tools/provision/roster.json)',
@@ -121,6 +126,12 @@ function usage() {
     '  --show-passwords           print newly generated passwords (they are in the credentials file too)',
     '  --api-key <key>            Web API key for verify-identifier (default: mobile/google-services.json)',
     '  --keep                     verify-identifier: keep the throwaway account (default: delete it)',
+    '  --legacy <id>              migrate-identity: the old document id (real email) to re-key',
+    '  --username <u>             reset-password / migrate-identity: which student',
+    "  --name <full name>         migrate-identity: display name for the migrated profile",
+    '  --allow-production-check   verify-identifier: allow --project jkss-fund itself (read-only)',
+    '  --quiet                    print only the essentials',
+    '  --help                     this text (same as `help`)',
     '',
     'Emulator mode: set FIREBASE_AUTH_EMULATOR_HOST / FIRESTORE_EMULATOR_HOST and',
     'no credentials are needed (used by the integration tests).',
@@ -607,4 +618,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { parseArgs, main, KNOWN_FLAGS };
+module.exports = { parseArgs, main, KNOWN_FLAGS, COMMANDS, usage };

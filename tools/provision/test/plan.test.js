@@ -11,7 +11,7 @@ const path = require('path');
 const planLib = require('../lib/plan');
 const identity = require('../../../mobile/src/identity');
 const report = require('../lib/report');
-const { parseArgs, KNOWN_FLAGS } = require('../provision');
+const { parseArgs, KNOWN_FLAGS, COMMANDS, usage } = require('../provision');
 
 let pass = 0;
 let fail = 0;
@@ -325,6 +325,72 @@ check('parseArgs: a flags that needs a value fails without one', () => {
 check('known flags cover every command documented in the tool usage text', () => {
   ['--roster', '--project', '--credentials', '--apply', '--confirm-project', '--username', '--legacy']
     .forEach((f) => ok(KNOWN_FLAGS[f], 'missing flag ' + f));
+});
+
+/* --------------------- docs ↔ CLI (every documented command runs) ------- */
+// The docs are the runbook an admin follows at the keyboard: if a command or a
+// flag in them stopped existing, the failure would only show up mid-deployment.
+// Every `provision.js <cmd>` invocation and every `--flag` on a provision.js
+// line is checked against the real parser.
+const DOC_FILES = [
+  ['docs', 'USERNAME_LOGIN.md'],
+  ['tools', 'provision', 'README.md'],
+  ['README.md'],
+  ['DEPLOY.md'],
+  ['SECURITY_REVIEW.md'],
+  ['firebase', 'README.md'],
+  ['mobile', 'PLAY_STORE.md'],
+];
+const MANUAL_USE_RE = /provision\.js\s+(--?[\w-]+)?/g;
+
+function provisionFileLines() {
+  const out = [];
+  DOC_FILES.forEach((parts) => {
+    const file = path.join(__dirname, '..', '..', '..', ...parts);
+    if (!fs.existsSync(file)) return;
+    // join shell line-continuations so a flag on the next line still counts
+    const text = fs.readFileSync(file, 'utf8').replace(/\\\n\s*/g, ' ');
+    text.split('\n').forEach((line) => {
+      if (line.includes('provision.js')) out.push({ file: parts.join('/'), line });
+    });
+  });
+  return out;
+}
+
+check('docs: every provision.js command in the docs exists in the CLI', () => {
+  const lines = provisionFileLines();
+  ok(lines.length > 5, 'expected the docs to document provision.js (found ' + lines.length + ' lines)');
+  lines.forEach(({ file, line }) => {
+    let m;
+    MANUAL_USE_RE.lastIndex = 0;
+    while ((m = MANUAL_USE_RE.exec(line))) {
+      const token = m[1];
+      if (!token || token.startsWith('-')) continue; // bare `provision.js` = default plan
+      ok(COMMANDS.includes(token),
+        file + ': unknown command "' + token + '" (commands: ' + COMMANDS.join(', ') + ')');
+    }
+  });
+});
+
+check('docs: every --flag next to provision.js in the docs exists in the CLI', () => {
+  const offenders = [];
+  provisionFileLines().forEach(({ file, line }) => {
+    const flags = line.match(/--[a-z][a-z0-9-]*/g) || [];
+    flags.forEach((f) => {
+      if (!KNOWN_FLAGS[f]) offenders.push(file + ': ' + f + '   [' + line.trim() + ']');
+    });
+  });
+  eq(offenders.length, 0, 'documented flags the CLI does not know:\n    ' + offenders.join('\n    '));
+});
+
+check('docs: the usage text lists every option it accepts', () => {
+  const text = usage();
+  Object.keys(KNOWN_FLAGS).forEach((f) => {
+    ok(text.includes(f), 'usage() does not mention ' + f);
+  });
+  COMMANDS.filter((c) => c !== 'plan').forEach((c) => {
+    ok(text.includes(c), 'usage() does not mention the command ' + c);
+  });
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

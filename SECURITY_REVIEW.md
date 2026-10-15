@@ -447,7 +447,7 @@ node test/accounting.test.js     # 31 passed, 0 failed  paise math
 node test/api.mock.test.js       # 37 passed, 0 failed  data layer + username login
 
 cd tools/provision
-node test/plan.test.js           # 36 passed, 0 failed  roster/mapping/migration plan
+node test/plan.test.js           # 39 passed, 0 failed  roster/mapping/migration/docs-vs-CLI
 node test/passwords.test.js      # 15 passed, 0 failed  CSPRNG + credentials file
 
 # --- emulator suites (need Java 21+; throwaway emulators, no production access) ---
@@ -836,7 +836,7 @@ account; the completed security and accounting work stays intact.
 | Job | Run | Result |
 |---|---|---|
 | Rules unit tests (Firestore emulator, production rules engine) | `38717587168` | **SUCCESS — 89 passed, 0 failed** (75 previous + 14 new synthetic-identifier scenarios) |
-| Accounting + identity + api orchestration | `38717587168` | SUCCESS — 63 identity + 31 accounting + 37 api/login + 36 provisioning plan + 15 password checks |
+| Accounting + identity + api orchestration | `38717587168` | SUCCESS — 63 identity + 31 accounting + 37 api/login + 36 provisioning plan + 15 password checks (the plan suite now also proves every command/flag printed in the docs exists in the CLI: 39) |
 | Username login (v3.0) → Node suites | `38717587462` | SUCCESS |
 | Username login (v3.0) → Provisioning + login E2E (Auth + Firestore emulators, `firebase-admin`) | `38717587462` | **SUCCESS — 31 passed, 0 failed** |
 
@@ -858,7 +858,9 @@ touching production.
   collision determinism, blocking-vs-warning ambiguity handling, held-back
   students, admin-profile preservation, unsafe flags refused, CSPRNG password
   properties, credentials-file permissions and never-overwrite behaviour, plus a
-  docs↔code mapping-drift check.
+  docs↔code mapping-drift check and a docs↔CLI check (every `provision.js`
+  command and `--flag` an admin could copy out of the docs must exist in the
+  parser, and `help` must list every accepted flag).
 * `firebase/test/rules.test.js` — **89 scenarios** in the production rules
   engine, including 14 new ones that run the engine with synthetic identifiers
   (pre-authorization, unauthorized lockout, withdrawal/credit/reversal with
