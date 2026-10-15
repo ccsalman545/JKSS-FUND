@@ -147,7 +147,7 @@ function LoginScreen({ setToken, setUser, setIsLoggedIn }) {
         <View style={styles.infoBox}>
           <Text style={styles.infoText}>Default Admin:</Text>
           <Text style={styles.infoText}>Username: admin</Text>
-          <Text style={styles.infoText}>Password: admin123</Text>
+          <Text style={styles.infoText}>Password: <REDACTED-legacy-default></Text>
         </View>
       </View>
     </ScrollView>

@@ -8,7 +8,7 @@ const bodyParser = require('body-parser');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
+const JWT_SECRET = process.env.JWT_SECRET; // was a hardcoded default (removed)
 
 // Middleware
 app.use(cors());
@@ -89,7 +89,7 @@ db.serialize(() => {
   db.run(`INSERT OR IGNORE INTO committee_fund (id, balance) VALUES (1, 0)`);
 
   // Create default admin if not exists
-  const defaultPassword = bcrypt.hashSync('admin123', 10);
+  const defaultPassword = bcrypt.hashSync('<REDACTED-legacy-default>', 10);
   db.run(
     `INSERT OR IGNORE INTO users (id, username, password, role, full_name) VALUES (1, 'admin', ?, 'admin', 'Administrator')`,
     [defaultPassword]
@@ -562,5 +562,5 @@ app.post('/api/student/withdraw', authenticateToken, (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Default admin credentials: username="admin", password="admin123"`);
+  console.log(`Default admin credentials: username="admin", password="<REDACTED-legacy-default>"`);
 });

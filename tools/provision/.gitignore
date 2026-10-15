@@ -1,0 +1,21 @@
+# ---------------------------------------------------------------------------
+# SECRETS — never commit any of these
+# ---------------------------------------------------------------------------
+# Generated username/password list (mode 0600). Distribute the passwords, then
+# store this file in a password manager and delete it.
+credentials.json
+credentials*.json
+!roster.json
+
+# Firebase service-account keys (Admin SDK) — keep them OUTSIDE the repo too.
+*service-account*.json
+*firebase-adminsdk*.json
+*-key.json
+
+# Reports (contain live user ids / balances) and pre-migration backups
+reports/
+backups/
+
+# Node
+node_modules/
+npm-debug.log*

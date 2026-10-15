@@ -1,0 +1,18 @@
+{
+  "name": "jkss-fund-provision",
+  "version": "3.0.0",
+  "private": true,
+  "description": "One-time local provisioning tool: creates JKSS-FUND student Auth accounts (username → synthetic email identifier) and pre-authorizes their Firestore profiles. Dry-run by default.",
+  "main": "provision.js",
+  "scripts": {
+    "plan": "node provision.js",
+    "test": "node test/plan.test.js && node test/apply.test.js && node test/passwords.test.js",
+    "test:emulator": "node test/emulator.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.7.0"
+  }
+}

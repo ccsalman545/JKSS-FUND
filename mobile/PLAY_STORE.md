@@ -46,17 +46,21 @@ eas build -p android --profile production-aab   # produces app-release.aab
 
 See `../firebase/README.md`. In short:
 - Create a Firebase project, add an **Android app** (`com.jkssfund.app`).
-- Enable **Authentication** → Google + Email/Password.
-- Create a **Cloud Firestore** database and deploy `../firebase/firestore.rules`.
+- Enable **Authentication** → **Email/Password** (students sign in with an
+  assigned username; the admin with their email). Google sign-in is no longer
+  used by this app.
+- Create a **Cloud Firestore** database. Deploy `../firebase/firestore.rules` only at the gated
+  step in `docs/USERNAME_LOGIN.md` §8 step 7.
 - Download `google-services.json` and overwrite `mobile/google-services.json`.
 - Set the first admin's `role` to `admin` in Firestore (see firebase/README.md).
 
 ## 5. Pre-launch checklist
 
 - [ ] `mobile/google-services.json` replaced with the real Firebase config
-- [ ] Firebase Auth (Google + Email/Password) enabled
-- [ ] Firestore rules deployed
+- [ ] Firebase Auth (Email/Password) enabled
+- [ ] Firestore rules deployed (only at §8 step 7, after the admin-profile check and the `txnSeq` backfill)
 - [ ] First admin role set to `admin` in Firestore
 - [ ] AAB built and uploaded to Play Console
 - [ ] Privacy policy + data-safety form completed
-- [ ] Tested on a physical device: Google login, job add, balance, withdrawal
+- [ ] Tested on a physical device: student username login, job add, balance,
+      withdrawal, admin email login

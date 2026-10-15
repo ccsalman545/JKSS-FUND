@@ -1,10 +1,17 @@
 // src/context/AuthContext.js
+//
+// v3.0 authentication model:
+//   * Students sign in with the username the admin assigned (mapped by
+//     src/identity.js to a synthetic email identifier) + password.
+//   * The admin signs in with the existing Firebase Email/Password account.
+//   * Google Sign-In is gone (the project never had OAuth clients configured,
+//     and students must not need a Google account).
+//   * A signed-in account with NO admin-pre-authorized users/{id} document is
+//     held in the `unauthorized` state — it never reaches the dashboard.
 import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import * as LocalAuthentication from 'expo-local-authentication';
-import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import { auth } from '../firebase';
-import { api } from '../api';
-import { GOOGLE_WEB_CLIENT_ID, GOOGLE_ANDROID_CLIENT_ID } from '../config';
+import { api, isAccessDenied } from '../api';
 
 const AuthContext = createContext();
 
@@ -16,18 +23,11 @@ export const AuthProvider = ({ children }) => {
   // Signed in but NO pre-authorized profile doc (students must be
   // pre-authorized by the admin; see ensureProfile).
   const [unauthorized, setUnauthorized] = useState(false);
+  // true = Firestore denied the profile read (account not enabled), not merely
+  // "no profile document". Only meaningful while `unauthorized` is true.
+  const [accessDenied, setAccessDenied] = useState(false);
 
   useEffect(() => {
-    // Only configure Google Sign-In with real OAuth client IDs — placeholder
-    // IDs would make the native library throw/misbehave at configure time.
-    // Email/password auth is unaffected.
-    if (GOOGLE_SIGNIN_CONFIGURED) {
-      GoogleSignin.configure({
-        webClientId: GOOGLE_WEB_CLIENT_ID,
-        androidClientId: GOOGLE_ANDROID_CLIENT_ID,
-        offlineAccess: false,
-      });
-    }
     (async () => {
       try {
         const compatible = await LocalAuthentication.hasHardwareAsync();
@@ -41,18 +41,28 @@ export const AuthProvider = ({ children }) => {
         try { await api.ensureCommittee(); } catch (e) { /* ignore */ }
         try {
           // Read-only: profiles are pre-authorized by the admin (or the
-          // console). No matching doc -> "not pre-authorized" state.
+          // console / the local provisioning tool). No matching doc ->
+          // "awaiting authorization" state; the dashboard stays closed.
           const profile = await api.ensureProfile(fbUser);
           if (profile) {
             setUser(profile);
             setUnauthorized(false);
+            setAccessDenied(false);
           } else {
             setUser(null);
             setUnauthorized(true);
+            setAccessDenied(false);
           }
           setToken(fbUser.email);
         } catch (e) {
-          setUser(null); setToken(null); setUnauthorized(false);
+          if (isAccessDenied(e)) {
+            // Firestore refused the read: this account is not enabled (for
+            // example a legacy real-email student on hold). Show that state
+            // instead of silently returning to the login screen.
+            setUser(null); setToken(fbUser.email); setUnauthorized(true); setAccessDenied(true);
+          } else {
+            setUser(null); setToken(null); setUnauthorized(false); setAccessDenied(false);
+          }
         }
       } else {
         setUser(null); setToken(null); setUnauthorized(false);
@@ -62,14 +72,11 @@ export const AuthProvider = ({ children }) => {
     return unsub;
   }, []);
 
-  const login = async (email, password) => {
-    await api.login(email, password); // onAuthStateChanged updates state
-  };
-
-  const googleLogin = async (role = 'student') => {
-    await GoogleSignin.hasPlayServices();
-    const { idToken } = await GoogleSignin.signIn();
-    await api.googleLogin(idToken, role);
+  // `usernameOrEmail`: a student's assigned username, or the admin's email.
+  // Nothing is stored here — Firebase Auth holds the session and
+  // onAuthStateChanged re-resolves the pre-authorized profile.
+  const login = async (usernameOrEmail, password) => {
+    await api.login(usernameOrEmail, password);
   };
 
   const logout = async () => {
@@ -96,8 +103,8 @@ export const AuthProvider = ({ children }) => {
   };
 
   const value = useMemo(
-    () => ({ token, user, loading, biometricSupported, unauthorized, login, googleLogin, logout, promptBiometric, updateProfile, changePassword }),
-    [token, user, loading, biometricSupported, unauthorized]
+    () => ({ token, user, loading, biometricSupported, unauthorized, accessDenied, login, logout, promptBiometric, updateProfile, changePassword }),
+    [token, user, loading, biometricSupported, unauthorized, accessDenied]
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

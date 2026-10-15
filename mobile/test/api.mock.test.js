@@ -1,8 +1,9 @@
 // test/api.mock.test.js
-// Executes the REAL mobile/src/api.js (transaction orchestration for
-// addJob / deleteJob / withdraw / removeStudent / ensure*) against an
-// in-memory Firestore mock with true transaction semantics (pending writes
-// visible inside the txn, atomic commit, full rollback on error).
+// Executes the REAL mobile/src/api.js (username login + transaction
+// orchestration for addJob / deleteJob / withdraw / removeStudent / ensure*)
+// against an in-memory Firestore mock with true transaction semantics
+// (pending writes visible inside the txn, atomic commit, full rollback on
+// error) and a stub Firebase Auth with real error codes.
 //
 // Scope note: this verifies the app-side orchestration and accounting math
 // end-to-end. It is NOT the Firestore emulator — rules-level enforcement
@@ -15,6 +16,8 @@
 const fs = require('fs');
 const path = require('path');
 const Module = require('module');
+const identity = require('../src/identity');
+const { STUDENT_EMAIL_DOMAIN } = identity;
 
 let pass = 0;
 let fail = 0;
@@ -32,6 +35,7 @@ function eq(a, b, msg) {
   if (a !== b) throw new Error((msg || 'eq') + ': ' + JSON.stringify(a) + ' !== ' + JSON.stringify(b));
 }
 function paise(rupees) { return Math.round(Number(rupees) * 100); }
+function ok(v, msg) { if (!v) throw new Error(msg || 'expected truthy'); }
 function assertThrowsAsync(fn, re, msg) {
   return fn().then(
     () => { throw new Error((msg || 'expected throw') + ': no error'); },
@@ -66,6 +70,8 @@ const mock = {
   clock: 1000,
   authUser: null,
   txn: null,
+  lastSignIn: null,
+  users: {},        // identifier -> { password } for the Auth stub
 
   read(p) {
     if (mock.txn) {
@@ -171,6 +177,22 @@ const mock = {
         };
         return ref;
       },
+      // Collection-level orderBy (used by api.dashboard for jobs). The mock
+      // does not sort: the tests assert contents, not ordering.
+      orderBy() {
+        return {
+          orderBy() { return this; },
+          onSnapshot() { throw new Error('subscriptions not needed in these tests'); },
+          get() {
+            const docs = [];
+            for (const [p, d] of self.docs) {
+              if (!p.startsWith(coll + '/')) continue;
+              docs.push({ id: p.slice(coll.length + 1), data: () => ({ ...d }) });
+            }
+            return Promise.resolve({ docs, size: docs.length, empty: docs.length === 0 });
+          },
+        };
+      },
       where(field, op, value) {
         return {
           orderBy() { return this; },
@@ -194,6 +216,8 @@ const mock = {
     mock.docs.clear();
     mock.clock = 1000;
     mock.txn = null;
+    mock.lastSignIn = null;
+    mock.users = {};
   },
 };
 
@@ -246,8 +270,32 @@ function loadApi() {
         currentUser: mock.authUser,
         GoogleAuthProvider: { credential: (t) => t },
         EmailAuthProvider: { credential: () => {} },
-        signInWithEmailAndPassword: () => Promise.reject(new Error('not in test')),
-        signInWithCredential: () => Promise.reject(new Error('not in test')),
+        // Firebase Email/Password stub: records the identifier it was asked to
+        // sign in with and reproduces the real error codes (`auth/*`) so the
+        // api.login mapping is exercised for real.
+        signInWithEmailAndPassword: (identifier, password) => {
+          mock.lastSignIn = { identifier, password };
+          const rec = Object.prototype.hasOwnProperty.call(mock.users, identifier)
+            ? mock.users[identifier]
+            : null;
+          if (!rec) {
+            const e = new Error('Firebase: There is no user record corresponding to this identifier.');
+            e.code = 'auth/user-not-found';
+            return Promise.reject(e);
+          }
+          if (rec.password !== password) {
+            const e = new Error('Firebase: The password is invalid or the user does not have a password.');
+            e.code = 'auth/wrong-password';
+            return Promise.reject(e);
+          }
+          if (rec.disabled) {
+            const e = new Error('Firebase: The user account has been disabled.');
+            e.code = 'auth/user-disabled';
+            return Promise.reject(e);
+          }
+          return Promise.resolve({ user: { email: identifier } });
+        },
+        signInWithCredential: () => Promise.reject(new Error('Google sign-in was removed in v3.0')),
       }),
       firestore: fbFn,
     },
@@ -544,16 +592,31 @@ let job1Id, job2Id;
     eq(JSON.stringify(getDoc('users/' + S[0])), before, 'profile doc must be unchanged');
   });
 
-  await check('admin pre-authorization: addStudent creates the profile, ensureProfile then resolves', async () => {
-    eq(await api.ensureProfile({ email: 'new@jkss.in' }), null, 'not yet authorized');
-    await api.addStudent('New@Jkss.in', 'New Person'); // admin context (seed authUser)
-    const d = getDoc('users/new@jkss.in');
+  await check('admin pre-authorization by USERNAME: profile created at the synthetic identifier', async () => {
+    const id = 'newstudent@' + STUDENT_EMAIL_DOMAIN;
+    eq(await api.ensureProfile({ email: id }), null, 'not yet authorized');
+    await api.addStudent('  NewStudent ', 'New Person'); // admin context (seed authUser)
+    const d = getDoc('users/' + id);
+    if (!d) throw new Error('profile not created at ' + id);
     eq(d.role, 'student');
     eq(d.balancePaise, 0);
     eq(d.txnSeq, 0);
     eq(d.full_name, 'New Person');
-    const p = await api.ensureProfile({ email: 'new@jkss.in' });
+    eq(d.email, id);
+    // The document must contain ONLY the fields the rules allow on create.
+    eq(Object.keys(d).sort().join(','),
+      'avatar,balance,balancePaise,createdAt,email,full_name,role,txnSeq');
+    const p = await api.ensureProfile({ email: id });
     eq(p.role, 'student', 'now authorized -> resolves');
+    eq(p.username, 'newstudent', 'handle is derived from the identifier');
+    eq(p.identifier, id);
+    eq(p.loginKind, 'username');
+  });
+
+  await check('addStudent: duplicates and invalid usernames are refused', async () => {
+    await assertThrowsAsync(() => api.addStudent('newstudent', 'Someone Else'), /already registered/);
+    await assertThrowsAsync(() => api.addStudent('bad username!', 'X'), /letters, numbers, dots/);
+    await assertThrowsAsync(() => api.addStudent('ok.name', '   '), /full name/);
   });
 
   await check('ensureCommittee: existing non-zero balance is never zeroed', async () => {
@@ -568,6 +631,149 @@ let job1Id, job2Id;
     await api.ensureCommittee();
     eq(getDoc(C).balancePaise, 0);
     eq(getDoc(C).balance, 0);
+  });
+
+  /* ==================================================================
+     v3.0 — username/password login, authorization gate, ledger identity
+     ================================================================== */
+
+  const STUDENT = identity.assignUsernames(['Thangal'])[0]; // username 'thangal'
+  const STUDENT_ID = STUDENT.identifier;
+  const STUDENT_PW = 'Tmp-Fund-2026!';
+
+  await check('login: assigned username → synthetic identifier + password (real Auth call)', async () => {
+    mock.reset();
+    mock.users[STUDENT_ID] = { password: STUDENT_PW };
+    await api.login('  Thangal  ', STUDENT_PW); // exactly what a student types
+    eq(mock.lastSignIn.identifier, STUDENT_ID, 'identifier must be the synthetic one');
+    eq(mock.lastSignIn.password, STUDENT_PW);
+  });
+
+  await check('login: two-word username and @handle resolve to the same identifier', async () => {
+    mock.reset();
+    const m = identity.assignUsernames(['Muhsin Chelakkulam'])[0];
+    mock.users[m.identifier] = { password: 'Xyz!1234' };
+    await api.login('@Muhsin Chelakkulam', 'Xyz!1234');
+    eq(mock.lastSignIn.identifier, m.identifier);
+  });
+
+  await check('login: the ADMIN email is passed through unchanged (existing account+password)', async () => {
+    mock.reset();
+    mock.users[ADMIN] = { password: 'AdminPw1!' };
+    await api.login('  Admin@Jkss.in ', 'AdminPw1!');
+    eq(mock.lastSignIn.identifier, ADMIN, 'must be the lowercased email, unchanged');
+  });
+
+  await check('login: invalid username is rejected BEFORE any Auth call', async () => {
+    mock.reset();
+    mock.users[STUDENT_ID] = { password: STUDENT_PW };
+    await assertThrowsAsync(() => api.login('thangal!', STUDENT_PW), /letters, numbers, dots/i);
+    await assertThrowsAsync(() => api.login('', STUDENT_PW), /Enter your username/);
+    eq(mock.lastSignIn, null, 'Firebase must not be contacted for junk input');
+  });
+
+  await check('login: empty password is rejected before any Auth call', async () => {
+    mock.reset();
+    mock.users[STUDENT_ID] = { password: STUDENT_PW };
+    await assertThrowsAsync(() => api.login('thangal', ''), /Enter your password/);
+    eq(mock.lastSignIn, null);
+  });
+
+  await check('login: WRONG password is rejected with a generic, non-enumerating message', async () => {
+    mock.reset();
+    mock.users[STUDENT_ID] = { password: STUDENT_PW };
+    await assertThrowsAsync(() => api.login('thangal', 'wrong-password'), /Wrong username or password/i);
+  });
+
+  await check('login: unknown username gives the SAME message (no account enumeration)', async () => {
+    mock.reset();
+    mock.users[STUDENT_ID] = { password: STUDENT_PW };
+    const wrongPw = await api.login('thangal', 'nope').catch((e) => e.message);
+    const unknown = await api.login('nobody', 'nope').catch((e) => e.message);
+    eq(unknown, wrongPw, 'messages must be identical');
+    eq(/nobody/.test(unknown), false, 'must not echo the username');
+  });
+
+  await check('login: admin email failures use the email wording', async () => {
+    mock.reset();
+    mock.users[ADMIN] = { password: 'AdminPw1!' };
+    await assertThrowsAsync(() => api.login(ADMIN, 'nope'), /Wrong email or password/i);
+  });
+
+  await check('login: a disabled account reports a disabled account', async () => {
+    mock.reset();
+    mock.users[STUDENT_ID] = { password: STUDENT_PW, disabled: true };
+    await assertThrowsAsync(() => api.login('thangal', STUDENT_PW), /disabled/i);
+  });
+
+  await check('unauthorized student: signed in, but NO profile → ensureProfile null (dashboard closed)', async () => {
+    mock.reset();
+    eq(await api.ensureProfile({ email: STUDENT_ID }), null);
+    eq(getDoc('users/' + STUDENT_ID), null, 'a student may never create their own profile');
+  });
+
+  await check('ledger identity: withdrawals use the synthetic identifier everywhere', async () => {
+    mock.reset();
+    mock.authUser = { email: STUDENT_ID };
+    mock.docs.set('users/' + STUDENT_ID, {
+      email: STUDENT_ID, role: 'student', full_name: 'Thangal', balancePaise: 50000, balance: 500, txnSeq: 0,
+    });
+    mock.docs.set(C, { balancePaise: 0, balance: 0 });
+    const res = await api.withdraw(100, 'Books');
+    eq(paise(res.balance), 40000);
+    eq(getDoc('users/' + STUDENT_ID).balancePaise, 40000);
+    eq(getDoc('users/' + STUDENT_ID).txnSeq, 1);
+    eq(getDoc('users/' + STUDENT_ID).withdrawalTxnId, 'w_' + STUDENT_ID + '_1');
+    const txns = txnsOf(STUDENT_ID);
+    eq(txns.length, 1);
+    eq(txns[0].id, 'w_' + STUDENT_ID + '_1', 'canonical id must embed the identifier');
+    eq(txns[0].studentId, STUDENT_ID);
+    eq(txns[0].seq, 1);
+  });
+
+  await check('dashboard: the students list exposes the @handle derived from the identifier', async () => {
+    mock.reset();
+    mock.authUser = { email: ADMIN };
+    mock.docs.set('users/' + ADMIN, { email: ADMIN, role: 'admin', full_name: 'Admin', balancePaise: 0, balance: 0, txnSeq: 0 });
+    mock.docs.set('users/' + STUDENT_ID, { email: STUDENT_ID, role: 'student', full_name: 'Thangal', balancePaise: 100, balance: 1, txnSeq: 0 });
+    mock.docs.set(C, { balancePaise: 0, balance: 0 });
+    const d = await api.dashboard();
+    eq(d.students.length, 1);
+    eq(d.students[0].username, 'thangal');
+    eq(d.students[0].identifier, STUDENT_ID);
+    eq(d.students[0].id, STUDENT_ID, 'the document id IS the identifier');
+  });
+
+  await check('balance(): the student sees their handle, not a synthetic address', async () => {
+    mock.reset();
+    mock.authUser = { email: STUDENT_ID };
+    mock.docs.set('users/' + STUDENT_ID, { email: STUDENT_ID, role: 'student', full_name: 'Thangal', balancePaise: 12345, balance: 123.45, txnSeq: 0 });
+    mock.docs.set(C, { balancePaise: 777, balance: 7.77 });
+    const b = await api.balance();
+    eq(b.balancePaise, 12345);
+    eq(b.username, 'thangal');
+    eq(b.identifier, STUDENT_ID);
+    eq(b.committeeBalance, 7.77);
+  });
+
+  await check('removing a student does NOT reset their login identity (tombstone only)', async () => {
+    mock.reset();
+    mock.authUser = { email: ADMIN };
+    mock.docs.set('users/' + STUDENT_ID, { email: STUDENT_ID, role: 'student', full_name: 'Thangal', balancePaise: 900, balance: 9, txnSeq: 0 });
+    await api.removeStudent(STUDENT_ID);
+    const d = getDoc('users/' + STUDENT_ID);
+    ok(d && d.removedAt, 'tombstoned');
+    eq(d.email, STUDENT_ID, 'identifier must be preserved (ledger ownership)');
+    eq(d.balancePaise, 900, 'balance preserved');
+  });
+
+  await check('access gate: a permission-denied profile read is recognised (both SDK spellings); other errors are not', async () => {
+    const { isAccessDenied } = loadApi();
+    ok(isAccessDenied({ code: 'firestore/permission-denied' }), 'react-native-firebase code');
+    ok(isAccessDenied({ code: 'permission-denied' }), 'web SDK code');
+    ok(!isAccessDenied({ code: 'firestore/unavailable' }), 'a network error is not an access denial');
+    ok(!isAccessDenied(new Error('boom')), 'a plain error is not an access denial');
+    ok(!isAccessDenied(null), 'null is not an access denial');
   });
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');

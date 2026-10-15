@@ -26,7 +26,12 @@ The app no longer uses a custom server. All auth, data, and rules live in Fireba
 > in `mobile/package.json`) rather than as Gradle BoM dependencies. Only run the
 > manual Gradle steps if you leave Expo and build a raw native Android app.
 
-## 3. Deploy rules + indexes
+## 3. Deploy rules + indexes (gated: the last step)
+
+> Do not run this until `docs/USERNAME_LOGIN.md` §8 steps 5 and 6 are complete (admin-profile
+> check, `txnSeq` backfill). It is step 7 of that order.
+> It also turns on the held-account gate: real-email accounts are denied unless an
+> owner-created `legacyAuthorizations/<email>` document exists (SECURITY_REVIEW §3.2a).
 `firebase/.firebaserc` defaults to `jkss-fund` — the real project (verified
 against `mobile/google-services.json`). Emulator runs in CI always pass
 `--project jkss-fund-local` explicitly (a valid lowercase id that can never
@@ -69,6 +74,17 @@ manually:
 > console, which bypasses rules) must create `users/<new-admin-email>` with
 > `role: "admin"` — existing roles can never be edited by the app or the client.
 
+### Student identifiers (v3.0)
+
+Students do not use email addresses. The app maps an admin-assigned username to
+a synthetic **email-shaped** identifier for Firebase Authentication:
+`<username>@students.jkss-fund.invalid` (RFC 2606 `.invalid` — never registrable,
+never deliverable). The same string is the `users/{identifier}` document ID, the
+owner of `users/{identifier}/transactions/*`, and the key inside
+`jobs/{job}.allocations`. The v3.0 login did **not** change the rules — they key on the token's
+email, which is this identifier. The later student gate does change them: a verified email, a
+pre-authorized `role: 'student'` profile, and this identifier are all required (SECURITY_REVIEW §3.2a). See `../docs/USERNAME_LOGIN.md`.
+
 ## 5. Test the security rules (run before deploying)
 The full rules test suite (`test/rules.test.js`) runs the rules in the real
 Firestore emulator (the production rules engine). One-time setup on a machine
@@ -82,8 +98,19 @@ firebase emulators:exec --project jkss-fund-local --only firestore "node test/ru
 ```
 
 The command starts a throwaway local emulator (project `jkss-fund-local`),
-loads `firestore.rules`, runs 46 authorized/unauthorized scenarios, and prints
-a pass/fail summary. It never touches your production project.
+loads `firestore.rules`, runs 121 authorized/unauthorized scenarios (including the held-account gate, section 14, and the
+pre-authorization gate, section 15, plus the v3.0 synthetic student identifiers), and prints a pass/fail summary. It
+never touches your production project.
+
+The **provisioning + username-login end-to-end suite** uses the Auth and
+Firestore emulators (still nothing real):
+
+```bash
+cd ../tools/provision && npm ci
+cd ../firebase
+firebase emulators:exec --project jkss-fund-e2e --only firestore,auth \
+  "node ../tools/provision/test/emulator.test.js"
+```
 
 The same suite runs automatically in **GitHub Actions** on every push
 (`.github/workflows/firestore-rules.yml`); the job's output is published as a

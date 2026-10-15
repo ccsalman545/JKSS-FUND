@@ -1,46 +1,44 @@
 // src/screens/LoginScreen.js
 // Full-bleed gradient hero + floating glass form card.
+//
+// v3.0: students sign in with the USERNAME + temporary password the admin
+// assigned; the admin signs in with the existing email/password account. The
+// field accepts either — `api.login` resolves a username to its synthetic
+// identifier and passes an email straight through (src/identity.js).
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, SafeAreaView, Keyboard } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, SafeAreaView, Keyboard, Pressable } from 'react-native';
 import { LinearGradient } from 'react-native-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { Button, Input, FadeIn } from '../components/ui';
-import { APP_NAME, GOOGLE_SIGNIN_CONFIGURED } from '../config';
+import {
+  APP_NAME, STUDENT_EMAIL_DOMAIN, LOGIN_HINT_STUDENT, LOGIN_HINT_ADMIN, FORGOT_PASSWORD_HELP,
+} from '../config';
 
 export default function LoginScreen() {
-  const { login, googleLogin } = useAuth();
+  const { login } = useAuth();
   const { theme } = useTheme();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [gLoading, setGLoading] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+
+  // A person who typed an email (admin or a legacy student) gets the email
+  // wording; anything else is treated as an assigned username.
+  const looksLikeEmail = username.includes('@') && !/^@/.test(username.trim());
 
   const onLogin = async () => {
     Keyboard.dismiss();
     setError('');
     setLoading(true);
     try {
-      await login(username.trim(), password);
+      await login(username, password);
     } catch (e) {
       setError(e.message?.replace('Firebase: ', '') || 'Sign-in failed');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const onGoogle = async () => {
-    Keyboard.dismiss();
-    setError('');
-    setGLoading(true);
-    try {
-      await googleLogin('student');
-    } catch (e) {
-      setError(e.message?.replace('Firebase: ', '') || 'Google sign-in failed');
-    } finally {
-      setGLoading(false);
     }
   };
 
@@ -63,40 +61,16 @@ export default function LoginScreen() {
           <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.mode === 'light' ? 'transparent' : theme.border }]}>
             <Text style={[styles.cardTitle, { color: theme.text }]}>Sign in</Text>
             <Text style={[styles.cardSub, { color: theme.textMuted }]}>
-              {GOOGLE_SIGNIN_CONFIGURED
-                ? 'Students use Google · Admins use their credentials'
-                : 'Sign in with your email and password'}
+              {looksLikeEmail ? LOGIN_HINT_ADMIN : LOGIN_HINT_STUDENT}
             </Text>
 
-            {GOOGLE_SIGNIN_CONFIGURED ? (
-              <Button
-                label={gLoading ? 'Signing in…' : 'Continue with Google'}
-                variant="outline"
-                icon="logo-google"
-                loading={gLoading}
-                onPress={onGoogle}
-                size="lg"
-                style={styles.googleBtn}
-              />
-            ) : (
-              <Text style={[styles.googleNote, { color: theme.textFaint }]}>
-                Google sign-in is not configured yet — email sign-in works for all roles.
-              </Text>
-            )}
-
-            {GOOGLE_SIGNIN_CONFIGURED && (
-              <View style={[styles.dividerRow, { borderColor: theme.border }]}>
-                <View style={{ flex: 1 }} />
-                <Text style={[styles.dividerText, { color: theme.textFaint }]}>OR</Text>
-                <View style={{ flex: 1 }} />
-              </View>
-            )}
-
             <Input
-              icon="mail-outline"
-              placeholder="Email or username"
+              icon={looksLikeEmail ? 'mail-outline' : 'person-outline'}
+              placeholder={looksLikeEmail ? 'Email address' : 'Username'}
               autoCapitalize="none"
-              autoComplete="email"
+              autoCorrect={false}
+              autoComplete="username"
+              textContentType="username"
               value={username}
               onChangeText={(t) => { setUsername(t); setError(''); }}
             />
@@ -104,6 +78,8 @@ export default function LoginScreen() {
               icon="lock-closed-outline"
               placeholder="Password"
               secure
+              autoCapitalize="none"
+              autoComplete="password"
               value={password}
               onChangeText={(t) => { setPassword(t); setError(''); }}
             />
@@ -115,7 +91,38 @@ export default function LoginScreen() {
               </View>
             ) : null}
 
-            <Button label={loading ? 'Signing in…' : 'Login'} loading={loading} onPress={onLogin} size="lg" icon="log-in-outline" />
+            <Button
+              label={loading ? 'Signing in…' : 'Login'}
+              loading={loading}
+              onPress={onLogin}
+              size="lg"
+              icon="log-in-outline"
+              disabled={!username.trim() || !password}
+            />
+
+            <Pressable onPress={() => setShowHelp((v) => !v)} style={styles.helpToggle}>
+              <Ionicons name="help-circle-outline" size={15} color={theme.textMuted} />
+              <Text style={[styles.helpToggleText, { color: theme.textMuted }]}>
+                {showHelp ? 'Hide help' : 'Where is my username / password?'}
+              </Text>
+            </Pressable>
+
+            {showHelp ? (
+              <View style={[styles.helpBox, { backgroundColor: theme.primarySoft, borderColor: theme.border }]}>
+                <Text style={[styles.helpText, { color: theme.text }]}>
+                  Students: your admin assigns your username (for example <Text style={styles.mono}>thangal</Text>) and a
+                  one-time temporary password. You do not need an email address.
+                </Text>
+                <Text style={[styles.helpText, { color: theme.text }]}>
+                  Change the temporary password after your first sign-in: Profile → Change password.
+                </Text>
+                <Text style={[styles.helpText, { color: theme.text }]}>{FORGOT_PASSWORD_HELP}</Text>
+                <Text style={[styles.helpFine, { color: theme.textFaint }]}>
+                  (Internally a username becomes <Text style={styles.mono}>{'<username>@' + STUDENT_EMAIL_DOMAIN}</Text> —
+                  a non-deliverable address used only by Firebase Authentication. No email is ever sent to it.)
+                </Text>
+              </View>
+            ) : null}
           </View>
 
           <Text style={styles.footer}>
@@ -163,14 +170,17 @@ const styles = StyleSheet.create({
   },
   cardTitle: { fontSize: 20, fontWeight: '800', letterSpacing: -0.3 },
   cardSub: { fontSize: 12.5, marginTop: 4, marginBottom: 18, lineHeight: 18 },
-  googleBtn: { marginBottom: 16 },
-  dividerRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 14, borderTopWidth: 0 },
-  dividerText: { fontSize: 11, fontWeight: '800', letterSpacing: 1 },
   errorBox: {
     flexDirection: 'row', alignItems: 'center',
     borderRadius: 12, padding: 11, marginBottom: 12, gap: 8,
   },
   errorText: { flex: 1, fontSize: 12.5, fontWeight: '600', lineHeight: 17 },
+  helpToggle: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 16, gap: 6 },
+  helpToggleText: { fontSize: 12.5, fontWeight: '600' },
+  helpBox: { marginTop: 12, borderRadius: 16, borderWidth: 1, padding: 14, gap: 10 },
+  helpText: { fontSize: 12.5, lineHeight: 18.5 },
+  helpFine: { fontSize: 11, lineHeight: 16 },
+  mono: { fontFamily: 'monospace', fontSize: 12 },
   footer: {
     color: 'rgba(255,255,255,0.75)', fontSize: 12, textAlign: 'center',
     marginTop: 22, lineHeight: 19, fontWeight: '500',

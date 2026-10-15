@@ -7,7 +7,9 @@ results, and the exact steps to run tests and deploy — plus an honest
 assessment of what is and is *not* safe for real money.
 
 **Status:** implementation + executable tests complete on branch
-`arena/dc657e31-jkss-fund` (tip `3cbe1da`). The rules suite is
+`arena/dc657e31-jkss-fund` (tip `3cbe1da`). **v3.0 addendum (username logins):
+the username login did not change `firestore.rules`; see §11. The later held-account and pre-authorization
+gate DID change the rules; see §3.2a.** The rules suite is
 **executed in GitHub Actions CI** (Firestore emulator, production rules
 engine) — see §4. Latest run **38704744622: SUCCESS — 75/75 rules scenarios
 passed, 0 failure annotations**; Node suites green in the same run. Rules
@@ -95,6 +97,9 @@ correctness bugs that the new rules would have punished:
 
 ## 2. Modified files & why
 
+> Historical record of the pre-v3.0 rewrite. For the v3.0 deltas see §2.1. Where this table
+> and the runbook disagree, the runbook (`docs/USERNAME_LOGIN.md` §8) wins.
+
 | File | Change |
 |------|--------|
 | `firebase/firestore.rules` | **Full rewrite (v3.2)** — least-privilege ruleset using only verified language constructs (design in §3); batch protocol with exact-path cross-references; tombstone job reversal |
@@ -118,6 +123,31 @@ correctness bugs that the new rules would have punished:
 | `mobile/src/screens/LoginScreen.js` | Google sign-in button hidden until real OAuth client IDs are configured (see §9) |
 | `mobile/src/config.js` | `GOOGLE_SIGNIN_CONFIGURED` flag derived from the client IDs (placeholders detected) |
 | `mobile/src/context/AuthContext.js` | `GoogleSignin.configure` called only with real IDs (placeholder IDs would make the native library misbehave); email/password auth unaffected |
+
+### 2.1 v3.0 delta (username/password logins)
+
+The table above is the security/accounting release's record. v3.0 changed **no
+rules**; it added:
+
+| File | Change |
+|------|--------|
+| `mobile/src/identity.js` | **New** — single source of truth: slugify → username → internal identifier, deterministic collision resolution, roster assignment, login resolution, password policy (shared by app, suites and tool) |
+| `mobile/src/api.js` | `login(usernameOrEmail, password)` (username → identifier, admin email passes through); `googleLogin` removed; `addStudent(username, …)` pre-authorizes `users/{identifier}`; profile exposes `username` **and** `loginIdentifier` |
+| `mobile/src/context/AuthContext.js` | Google Sign-In removed; `status` gate unchanged (unauthorized students never reach the dashboard) |
+| `mobile/src/screens/LoginScreen.js` | Username + password form, in-app help, no Google button |
+| `mobile/src/screens/NotAuthorizedScreen.js` | **New** — "Awaiting admin authorization" screen |
+| `mobile/src/screens/ProfileScreen.js` | Change-password available to **students** too; forgotten-password guidance |
+| `mobile/src/screens/StudentsScreen.js` | Add student by **username** (pre-authorization) |
+| `mobile/src/config.js`, `mobile/app.json`, `mobile/package.json` | Google OAuth placeholder + `@react-native-google-signin/google-signin` dependency **removed** (nothing else read them; §9.3 note) |
+| `mobile/test/identity.test.js` | **New** — 63 executed tests (normalization, collisions, identifier mapping, policy, 20k fuzz) |
+| `mobile/test/api.mock.test.js` | Extended to **37 tests** (username login with real `auth/*` codes, identical error text for unknown-user vs wrong-password, ledger identity) |
+| `tools/provision/**` | **New** — the local provisioning tool + 3 suites (plan 36, passwords 15, emulator E2E 31) |
+| `firebase/test/rules.test.js` | **121 scenarios** (89 before the held-account gate, +22 in section 14, +10 in section 15 — see §3.2a) |
+| `.github/workflows/username-login.yml` | **New** — node suites + Auth/Firestore emulator E2E job |
+| `docs/USERNAME_LOGIN.md`, `tools/provision/README.md`, `README.md`, `PRIVACY_POLICY.md`, `mobile/PLAY_STORE.md`, `SECURITY_REVIEW.md`, `firebase/README.md` | Documentation for the above |
+
+Consequences for §9/§10: the app.json OAuth placeholder and the Google sign-in
+console checklist no longer apply (kept only as history).
 
 ---
 
@@ -186,6 +216,9 @@ legacy `math.round(balance*100)`), `balanceFieldsOnly()` (affected keys ⊆
 zero balances, `email` == doc ID, `txnSeq` absent or exactly 0 — used both
 for admin create and for the pre-authorization **activation** update), plus
 per-batch helpers implementing the protocol in §3.2.
+
+Access-gate helpers (held legacy accounts, §3.2a): `usernameIdentifier(e)`,
+`legacyAuthorized(e)`, `studentAccessOk()`, `selfAccessOk()`.
 
 ### 3.2 Path-by-path
 
@@ -257,6 +290,104 @@ per-batch helpers implementing the protocol in §3.2.
 - **`/transactions/{txnId}`** (legacy) — read: admin; all writes denied
 - **Catch-all** — explicit deny for everything else
 
+### 3.2a Student access gate (held legacy accounts and pre-authorization)
+
+**Threat.** Before this gate, a real-email account that had a `users/{email}`
+profile (a legacy student on hold, Option B) could read its own balance and ledger,
+and could withdraw from its own balance. The rules only asked "is this my own
+document?", so the hold existed only in the provisioning tool. A later review also
+found that a signed-in synthetic identifier could read the committee balance without
+any profile check, and that the sign-in email was not verified (see the rationale below).
+
+**Rule.** A signed-in account may use a student financial path only when all of these
+hold (`studentAccessOk()`):
+
+1. its sign-in email is **verified** (`request.auth.token.email_verified == true`);
+2. `users/{email}` **exists with `role == 'student'`**. Only an admin (or the console)
+   can create that profile, so the profile is the admin's pre-authorization. A missing
+   profile, a missing `role` field, or any other role denies;
+3. **either** its email is a username identifier (`^[a-z0-9._-]+@students[.]jkss-fund[.]invalid$`,
+   the v3.0 login), **or** `legacyAuthorizations/{email}` exists with `authorized == true`.
+   Only an admin can read that collection. Clients cannot write it. The owner creates it
+   in the console or with an admin SDK script, which is a manual, approved production write.
+
+Any other account reads and writes no financial data. A real-email account without
+item 3 is a legacy student on hold.
+
+**Why the verified-email check (item 1).** The profile check alone is not enough. The app
+ships the public Web API key, and email/password sign-up is open unless the owner has
+turned it off. Without item 1, someone could register `<username>@students.jkss-fund.invalid`
+or a legacy student's real address before its owner, and inherit the profile that
+already exists. Synthetic identifiers use the `.invalid` domain, which can never receive
+mail, so no verification can ever complete for a self-registered synthetic account. The
+provisioning tool creates every student account with `emailVerified: true`
+(`tools/provision/lib/firebase.js`).
+
+**Gated paths** (`studentAccessOk()` / `selfAccessOk()`):
+
+| Path | Before | After |
+|---|---|---|
+| `users/{self}` get | self | self **and gate** (admin unchanged) |
+| `users/{self}` update (profile or withdrawal) | self | self **and gate** |
+| `users/{self}/transactions` get/list | self | self **and gate** |
+| `users/{self}/transactions` create (withdrawal) | self | self **and gate** |
+| `meta/committee` get / create | any signed-in account | **gate** |
+| `legacyAuthorizations/{email}` | (none) | admin read only; no client write |
+
+Admin paths are unchanged: user list and any profile or ledger read, job credit and
+reversal, reconciliation, the legacy `/transactions` audit read. `isAdmin()` does **not**
+check email verification. The existing admin account is preserved as it is, and an admin
+check added without verifying that account could lock the owner out (see residual 5).
+`selfAccessOk()` keeps an admin's own self-access as it was.
+
+**Tests.**
+* `firebase/test/rules.test.js` §14 (22 scenarios): held legacy accounts have no read or
+  write of the profile, ledger, committee or jobs, no withdrawal by any shape, no
+  self-authorization. A look-alike domain stays held, and revoking, a missing
+  `authorized` field, or another email's authorization keeps the account held.
+* `firebase/test/rules.test.js` §15 (10 scenarios): a synthetic account with **no profile**
+  reads no committee balance, no other student, no roster, no ledger; creates no
+  financial transaction; changes no balance. A profile with role `guest`, or with no
+  `role`, gets nothing. An **unverified** email gets nothing, even with a valid profile,
+  and so does an unverified legacy authorization. A legacy authorization with **no
+  profile** gets nothing. The legitimate paths still work: a pre-authorized, verified
+  username student reads its profile, the committee and its ledger, and withdraws; an
+  authorized legacy student keeps access; admin keeps every admin read.
+* `tools/provision/test/emulator.test.js` §6b (E2E, real ID tokens): the Auth emulator
+  issues ID tokens, and the suite reads through the Firestore emulator REST API with
+  `Authorization: Bearer <token>`, so the rules judge the real `email_verified` claim.
+  It checks: a provisioned username student reads its own profile and the committee and
+  is denied another student's profile; an unprovisioned account is denied the committee
+  and profiles; a pre-authorized profile whose email is unverified is denied; the held
+  legacy account is denied its own profile and the committee; the admin keeps its access.
+
+**Residuals (honest list).**
+1. **Not in force until deployed.** The live project still runs its existing ruleset.
+   Until the gated deploy (runbook §8 step 7), held accounts keep their current access.
+2. **Owner decision needed before deploy.** Any real-email account without an
+   authorization document is denied as soon as the rules are live. That includes
+   unmatched former students as well as held ones. Each account the owner wants to keep
+   needs an authorization document first.
+3. **Rollback re-opens held accounts.** Restoring the previous rules removes the gate.
+4. **Pre-deploy data checks.** The gate needs every username account to be email-verified
+   and every username profile to have `role: 'student'`. Accounts created by the tool
+   satisfy both. A console-created account, or a profile without a `role` field, would
+   lose access on deploy. Check both before step 7 (runbook §8). The check is read-only:
+   `firebase auth:export` to a file **outside the repository**, then delete the file,
+   because it contains password hashes.
+5. **The admin account is not verification-gated.** `isAdmin()` is unchanged. Adding the
+   same verified-email check to admin is a reasonable follow-up, but only after the owner
+   confirms the admin Auth account is verified. Otherwise the owner could be locked out.
+6. **Username regex is looser than the app's.** The rules accept leading, trailing or
+   doubled separators (for example `a..b`) that `mobile/src/identity.js` never issues. That
+   is not a bypass, because only accounts already on the synthetic domain can match. The
+   app's exact form needs no lookahead, so the rules could use it:
+   `^[a-z0-9]+([._-][a-z0-9]+)*@students[.]jkss-fund[.]invalid$`. Changing it is a separate
+   change, and it needs a check of existing usernames first.
+7. **Removed students keep their access.** A tombstoned (`removedAt`) student still reads
+   its own balance and can withdraw. This is the existing behaviour, and the gate does not
+   change it. It is a policy question for the owner.
+
 ### 3.3 Schema / data-model changes
 
 - Money: integer **paise** fields (`balancePaise`, `amountPaise`,
@@ -315,10 +446,17 @@ admin-trust-root or cosmetic):
    (the fund retains the difference, detectable by auditing the job's
    allocations against the ledger), never over-allocate.
 3. **The admin token is the trust root** (see §7.2).
+4. **The held-account gate depends on the deployed ruleset** (§3.2a). Until the gated
+   deploy, held real-email accounts keep their current access in the live project.
 
 ---
 
 ## 4. Tests — what was executed and results
+
+> **v3.0 update:** the suite grew from 75 to **89 scenarios** and five new Node
+> suites were added; the *current* results (CI runs, exact numbers) are in
+> **§11.2**, and the exact commands in §5. Everything below is the
+> security/accounting release's record, kept as history.
 
 ### 4.1 Executed in this environment (Node, real code, real results)
 
@@ -409,25 +547,47 @@ invariants) — **75 scenarios, all passing in the latest CI run**:
 
 ### Run the tests
 ```bash
-# Accounting + app-orchestration tests (any machine with Node 18+):
+# --- v3.0 suites (any machine with Node 18+, no Java needed) ---
 cd mobile
-node test/accounting.test.js
-node test/api.mock.test.js
+node test/identity.test.js       # 63 passed, 0 failed  username ↔ identifier mapping
+node test/accounting.test.js     # 31 passed, 0 failed  paise math
+node test/api.mock.test.js       # 37 passed, 0 failed  data layer + username login
 
-# Security rules tests (needs Java 21+; throwaway local emulator, no production access):
+cd tools/provision
+node test/plan.test.js           # 51 passed, 0 failed  roster/mapping/migration/hold/frozen (D-1)/docs-vs-CLI
+node test/apply.test.js          # 4 passed, 0 failed   D-1 through the real apply path (Firebase stubbed)
+node test/passwords.test.js      # 15 passed, 0 failed  CSPRNG + credentials file
+
+# --- emulator suites (need Java 21+; throwaway emulators, no production access) ---
 cd firebase
 npm ci
 firebase emulators:exec --project jkss-fund-local --only firestore "node test/rules.test.js"
-```
-(CI runs the same on every push — see the branch's Actions runs.)
+#   → 121 passed, 0 failed
+firebase emulators:exec --project jkss-fund-e2e --only firestore,auth \
+  "node ../tools/provision/test/emulator.test.js"
+#   → 31 passed, 0 failed  (real accounts created/signed-in/deleted in the emulator)
 
-### Deploy the rules (only after the test suite passes and you approve the production change)
+# --- provisioning dry run (no credentials, prints the 24-row mapping) ---
+#   No --project/--credentials means a pure-offline plan: nothing is read from or
+#   written to Firebase; the only side effect is a local 0600 report file under
+#   tools/provision/reports/ (git-ignored).
+node tools/provision/provision.js plan
+```
+CI runs the same on every push: `.github/workflows/firestore-rules.yml`
+(rules suite + accounting/identity/api suites) and
+`.github/workflows/username-login.yml` (node suites + the provisioning E2E job).
+Both jobs fail unless the output ends with `N passed, 0 failed`.
+
+### Deploy the rules — gated, last (see `docs/USERNAME_LOGIN.md` §8, step 7)
+
+> Deploying the rules is **not** part of merging this PR or of setting up username
+> login. It happens once, in the order given in the runbook §8, after the admin
+> profile check (step 5) and the `txnSeq` backfill (step 6). The command is shown here
+> for reference only. Do not run it earlier. Deploying also turns on the held-account gate
+> (§3.2a): real-email accounts are denied unless an owner-created authorization document exists.
 ```bash
 cd firebase
-npm i -g firebase-tools
-firebase login
-firebase use --add            # select the real project (default is jkss-fund)
-firebase deploy --only firestore --project jkss-fund
+firebase deploy --only firestore --project jkss-fund   # runbook §8 step 7 only
 ```
 
 ---
@@ -445,12 +605,12 @@ firebase deploy --only firestore --project jkss-fund
 2. **Firestore** (production mode — no changes needed for Spark; quotas are ample for a small fund)
    - [ ] `users` collection: create the first admin document (ID = lowercase admin email; `email`, `role: "admin"`, `full_name`, `avatar: ""`, `balancePaise: 0`, `balance: 0`). This must exist **before** the rules deploy (the bootstrap chicken-and-egg: only an admin can create admins, and no update path can grant the role).
    - [ ] Do **not** pre-create `meta/committee` — the app bootstraps it at zero.
-   - [ ] Legacy data (if any): leave the old top-level `transactions` collection in place (admin-read-only). Old `users/{id}` docs with non-email IDs or float-only balances: migrate to lowercase-email IDs **before** deploying (the new rules reject non-email IDs) and add `balancePaise = round(balance*100)`. **Also add `txnSeq: 0` to every existing user doc** (v3.5.2: the withdrawal counter is required on every user write — a doc without it cannot be the subject of a verified withdrawal/credit/reversal batch until it has `txnSeq: 0`). Old `jobs` without map `allocations`: leave them — the app refuses auto-reversal and flags them for manual reconciliation; note that v3.2 jobs use the **map** format, so mixed v3.1 list-format jobs cannot be reversed automatically either.
-   - [ ] **Admin profile**: the existing production admin doc uses ID `thrikkakarajkss` but its `email` field is `thrikkakarajkss@gmail.com`. The v3.5 rules resolve admin via the **doc ID == auth email**, so a sign-in as the existing account looks up `users/thrikkakarajkss@gmail.com` and finds nothing → the admin would be locked out of the admin dashboard after deploy. Do **not** delete or recreate the existing Firebase Auth account. Follow the safe reversible migration in **§10** (create the correctly-IDed doc, keep the old one). This must be done in the console (owner privileges bypass rules) **after** the rules deploy.
-3. **Deploy**
-   - [ ] Confirm the branch's CI run is green (rules suite + Node suites).
-   - [ ] `firebase deploy --only firestore` (rules + indexes).
-   - [ ] Verify in the console: Rules tab shows the v3.5.2 ruleset; Indexes tab shows no new composite indexes required.
+   - [ ] Legacy data (if any): leave the old top-level `transactions` collection in place (admin-read-only). Old `users/{id}` docs with non-email IDs or float-only balances: migrate to lowercase-email IDs **before** deploying (the rules do not validate ID format; a legacy document with a non-email ID is unreachable to any student, because students can read only `users/<their own auth email>`, and it stays visible to the admin) and add `balancePaise = round(balance*100)`. **Also add `txnSeq: 0` to every existing user doc** (v3.5.2: the withdrawal counter is required on every user write — a doc without it cannot be the subject of a verified withdrawal/credit/reversal batch until it has `txnSeq: 0`). Old `jobs` without map `allocations`: leave them — the app refuses auto-reversal and flags them for manual reconciliation; note that v3.2 jobs use the **map** format, so mixed v3.1 list-format jobs cannot be reversed automatically either.
+   - [ ] **Admin profile**: the existing production admin doc uses ID `thrikkakarajkss` but its `email` field is `thrikkakarajkss@gmail.com`. The v3.5 rules resolve admin via the **doc ID == auth email**, so a sign-in as the existing account looks up `users/thrikkakarajkss@gmail.com` and finds nothing → the admin would be locked out of the admin dashboard after deploy. Do **not** delete or recreate the existing Firebase Auth account. Follow the safe reversible migration in **§10** (create the correctly-IDed doc, keep the old one). This must be done in the console (owner privileges bypass rules) **before** the rules deploy (runbook §8 step 5).
+3. **Deploy** (gated — runbook §8 step 7; do not start until its prerequisites are ticked)
+   - [ ] Prerequisites in `docs/USERNAME_LOGIN.md` §8 step 7 are all ticked, including the admin-profile check (step 5) and the `txnSeq` backfill (step 6).
+   - [ ] `firebase deploy --only firestore --project jkss-fund` (rules + indexes), run from a clean checkout of the merge commit.
+   - [ ] Verify in the console: the Rules tab shows the new release; the Indexes tab shows no new composite index required.
 4. **Smoke-test on a device/emulator** (app pointed at the project)
    - [ ] Admin signs in → dashboard loads, committee bootstrap at zero.
    - [ ] Add a student (email) → student signs in → profile auto-created (student, ₹0).
@@ -539,11 +699,32 @@ real-money movement on the current architecture.
   correctly-IDed companion doc before the v3.5 rules go live. **Not done**
   (no production data modification without approval); exact reversible
   console steps in **§10**.
-- **Google sign-in** — not configurable from this repo: the project's
-  `google-services.json` ships with `oauth_client: []` (no OAuth clients
-  registered at all), so there are no client IDs to plug in yet. The app is
-  built to enable it automatically the moment real IDs land in
-  `mobile/src/config.js` (+ `app.json`). Exact console checklist in **§10.3**.
+- **Google sign-in** — **removed in v3.0** (students sign in with a username;
+  no student Google account is needed). The project's `google-services.json`
+  ships with `oauth_client: []`, the `@react-native-google-signin/google-signin`
+  dependency and the `app.json` client-id placeholder are gone, and no code
+  reads them. Restoring Google sign-in would mean re-adding all three (§10.3 is
+  the historical checklist).
+- **Legacy web app + API — ARCHIVED** to `archive/legacy-express-web/`. The code
+  no longer seeds `admin`/`admin123` and refuses to start without `JWT_SECRET`
+  (≥ 32 chars); `archive/legacy-express-web/test/legacy-hardening.test.js` is in CI.
+  A copy deployed from the OLD code is not changed by the repository and must be
+  checked by the owner (`DEPLOY.md` → Legacy section).
+- **Repository hygiene — resolved.** The six stray root files were archived
+  (`root-snapshots/`), except `app. jsx`, which was byte-identical to `app` and was
+  removed. The superseded snapshots had their default credentials redacted; the
+  originals are at base commit `0f362d9`.
+- **Real-email legacy profiles — ON HOLD (owner decision, Option B).** Students
+  whose existing profile is matched are held: no account is created, no password
+  is reset, no record is migrated, until each is reviewed (`docs/USERNAME_LOGIN.md`
+  §7.2). An explicit `"hold": true` + `"holdReason"` in `roster.json` blocks
+  creation even without a legacy profile.
+  **Enforced by the rules (§3.2a)** after the gated deploy: a held real-email account
+  reads and writes no financial data. Until that deploy, the live project still runs its
+  existing rules and held accounts keep their current access.
+  **Frozen (decision D-1):** a held legacy profile, a profile keyed to a student who
+  is not being created, and an ambiguous candidate are never backfilled with
+  `txnSeq: 0`; `apply` enforces this before any write. Residual risk: this is a tool guard. The rules gate (§3.2a) separately stops a held account's own access, but only once the gated deploy has happened.
 - **iOS / Hosting** — out of scope per the task.
 - **`removedAt` tombstones are never un-set** — re-adding a removed student
   requires a fresh identity (or console edit). Product decision.
@@ -567,8 +748,9 @@ Requested checks, with results:
   native projects only).
 - `ios.bundleIdentifier` = `com.jkssfund.app` — present but **out of scope**
   (no iOS work per the task); harmless.
-- `extra.googleWebClientId` = `YOUR_GOOGLE_WEB_CLIENT_ID…` — **placeholder**
-  (see §9.3); consumed by `config.js`.
+- `extra.googleWebClientId` — **removed in v3.0** together with the Google
+  Sign-In button and the `@react-native-google-signin/google-signin`
+  dependency (§11). `expo.extra` no longer exists; nothing reads it.
 - No secrets, no service-account data ✔.
 
 ### 9.2 `firebase/.firebaserc`
@@ -585,6 +767,12 @@ Requested checks, with results:
   the right project.
 
 ### 9.3 OAuth configuration (`google-services.json` ↔ app)
+
+> **v3.0 note:** Google Sign-In was removed from the app (the project never had
+> OAuth clients, and students must not need a Google account). Everything below
+> is the historical verification record; the checklist in §10.3 is kept only in
+> case Google sign-in is ever wanted again. Student login is now
+> username/password — see §11 and `docs/USERNAME_LOGIN.md`.
 - `mobile/google-services.json` = the **real config for project `jkss-fund`**
   (project number `753895495162`), Android client for `com.jkssfund.app` ✔.
   The `api_key` inside is a standard *client* key (meant to ship in the app;
@@ -616,7 +804,10 @@ These are the only things that cannot be done from this repository. They are
 ordered so that nothing is irreversible, and nothing modifies or deletes the
 existing admin Firebase Auth account or the old admin document.
 
-### 10.1 Admin profile migration (reversible) — do this AFTER the rules deploy
+### 10.1 Admin profile migration (reversible) — do this BEFORE the rules deploy
+
+> Order: runbook §8 step 5 (verify) and step 7 (deploy). If the admin document is
+> missing when the rules go live, the admin is locked out.
 
 **Why:** the v3.5 rules resolve "is this user an admin" as
 `exists(users/{auth.email}) && users/{auth.email}.data.role == 'admin'`. The
@@ -649,8 +840,7 @@ of students) once the new rules are live.
    anymore, so it can no longer grant anything).
 
 **Verify (no production financial data touched):**
-- In the app, sign in with the existing admin email/password (or Google,
-  once configured) → the admin dashboard opens, the student list loads, and
+- In the app, sign in with the existing admin email/password  → the admin dashboard opens, the student list loads, and
   "add student" (pre-authorization) works.
 - If anything looks wrong, **revert** by deleting the new
   `users/thrikkakarajkss@gmail.com` document only. The old document and the
@@ -665,13 +855,13 @@ migration is a pure console operation the owner can repeat or undo.
 
 ### 10.2 Student pre-authorization (ongoing, in-app)
 
-With the rules live, new students are added by the **admin in the app**
-(Students screen → add student → valid email). The app creates
-`users/{lowercased email}` at zero balance with `txnSeq: 0` (the only create
-path the rules grant). A student who has Google/email sign-in but no such
-doc is signed in normally but sees the "awaiting admin authorization"
-screen and **cannot** open the student dashboard. No profile is ever
-auto-created by a student's first sign-in.
+With the rules live, the admin adds a student **by username** in the app (Students
+screen → add student). The app writes `users/<username>@students.jkss-fund.invalid`
+in exactly the shape the rules allow (`addStudent` in `mobile/src/api.js`): role
+`student`, zero balances, `txnSeq: 0`, no other data. That document is the only way a
+student gets a profile. A student who signs in with a username but has no such document
+is signed in normally, sees the "awaiting admin authorization" screen, and **cannot**
+open the student dashboard. No profile is ever created from a student's own sign-in.
 
 ### 10.3 Google Sign-In — exact Google Cloud Console checklist
 
@@ -737,3 +927,93 @@ clients — check existing credentials first):
 - Do not enable iOS or Firebase Hosting (out of scope).
 - Do not commit service-account credentials, private keys, or the release
   signing keystore to this repository.
+
+
+---
+
+## 11. v3.0 addendum — username/password logins for students
+
+**Goal:** students sign in with an admin-assigned username + password; no student
+email address is created or required; the admin keeps the existing Email/Password
+account; the completed security and accounting work stays intact.
+
+### 11.1 What is (and is not) different in the security model
+
+| | |
+|---|---|
+| `firebase/firestore.rules` | **Unchanged by the v3.0 login work** (historical; the held-account and pre-authorization gate changed the rules later, §3.2a). No rule was added, relaxed or removed to make the login work. The rules already resolve identity from `request.auth.token.email`, and a student's auth email *is* the synthetic identifier (below) |
+| Student identity | `users/{identifier}` where `identifier = <username>@students.jkss-fund.invalid` — the same string that Firebase Authentication stores as the account's email, the same string used for `users/{id}/transactions/*` and for `jobs/{job}.allocations` keys |
+| Admin identity | Unchanged: the existing Auth account; `users/{admin-email}` + the legacy `users/thrikkakarajkss` document. **Both are preserved** — the provisioning tool never matches an admin profile (it is excluded from roster matching) and only ever adds a missing `txnSeq: 0` to any user document |
+| Pre-authorization | Unchanged and still the only way in: `allow create: if isAdmin() && newProfileOk(...)`. There is **no self-provisioning path** for a student, which is why an unauthorized sign-in sees only the "awaiting authorization" screen |
+| Passwords | Students' passwords live **only** in Firebase Authentication. Nothing stores them in Firestore, and the only local copy is the tool's 0600 credentials file (git-ignored). The app never calls `sendPasswordResetEmail` |
+| Why `.invalid` | RFC 2606 reserves the TLD: it can never be registered or delivered to. A reset email addressed to a student identifier therefore cannot reach a third party, and we are not inventing a real address |
+
+### 11.2 New tests (all executed in CI; commands in §5)
+
+**Actual results on branch `arena/883804d8-jkss-fund` after the v3.0 commits:**
+
+| Job | Run | Result |
+|---|---|---|
+| Rules unit tests (Firestore emulator, production rules engine) | `38717587168` | **SUCCESS — 89 passed, 0 failed** (75 previous + 14 new synthetic-identifier scenarios) |
+| Rules unit tests after the held-account gate (commit `cd63dbe`) | `38729530740` | **SUCCESS** — exit 0, so 0 failed of 111 (89 + 22 section-14 held-account scenarios). The printed count was not readable from the sandbox. The job log and artifact are not downloadable from it. |
+| Accounting + identity + api orchestration | `38717587168` | SUCCESS — 63 identity + 31 accounting + 37 api/login + 36 provisioning plan + 15 password checks (the plan suite now also proves every command/flag printed in the docs exists in the CLI: 39) |
+| Username login (v3.0) → Node suites | `38717587462` | SUCCESS |
+| Username login (v3.0) → Provisioning + login E2E (Auth + Firestore emulators, `firebase-admin`) | `38717587462` | **SUCCESS — 31 passed, 0 failed** |
+
+The first CI run of the new suites found three *test-harness* expectations to
+correct (one rules assertion that was actually an allowed "read your own missing
+profile" call, and two E2E invocation mistakes) — the tool and rules behaviour
+were already correct in that run; the annotations made both visible without
+touching production.
+
+
+* `mobile/test/identity.test.js` — normalization, collision rules, injective
+  identifier mapping, RFC 2606 domain, password policy, 20k fuzz inputs.
+* `mobile/test/api.mock.test.js` (extended) — username login against a stubbed
+  Firebase Auth with **real `auth/*` error codes**, identical error text for
+  "unknown username" and "wrong password" (no enumeration), invalid input
+  rejected before any Auth call, the unauthorized-account gate, and ledger/doc
+  IDs all embedding the identifier.
+* `tools/provision/test/plan.test.js` / `passwords.test.js` — roster mapping,
+  collision determinism, blocking-vs-warning ambiguity handling, held-back
+  students, admin-profile preservation, unsafe flags refused, CSPRNG password
+  properties, credentials-file permissions and never-overwrite behaviour, plus a
+  docs↔code mapping-drift check and a docs↔CLI check (every `provision.js`
+  command and `--flag` an admin could copy out of the docs must exist in the
+  parser, and `help` must list every accepted flag).
+* `firebase/test/rules.test.js` — **89 scenarios** at v3.0 (**121** after the held-account gate and the pre-authorization gate, §3.2a) in the production rules
+  engine, including 14 new ones that run the engine with synthetic identifiers
+  (pre-authorization, unauthorized lockout, withdrawal/credit/reversal with
+  synthetic ids, no-loosening checks).
+* `tools/provision/test/emulator.test.js` — end-to-end against the Auth +
+  Firestore emulators: dry runs create no Auth user and touch no document, 23 accounts created idempotently,
+  the admin account/password and both admin documents preserved, balances and
+  ledgers byte-identical, **no plaintext password anywhere in Firestore**,
+  valid/invalid password sign-in, an unauthorized account with no profile,
+  reset-password, identity migration with a pre-write backup, and the safety
+  gates (production `verify-identifier` refused; live writes need
+  `--confirm-project`).
+
+### 11.3 Residual risks introduced by v3.0 (honest list)
+
+1. **The identifier is guessable from the roster** (`thangal@…`). It is not a
+   secret and is not treated as one: the password is the credential, sign-in
+   failures are indistinguishable between "unknown username" and "wrong
+   password", and Firestore access still requires the pre-authorized profile.
+2. **The temporary-password distribution channel is human.** The credentials
+   file is plaintext by necessity (it must be handed out) — mode 0600,
+   git-ignored, one password per student, never a shared or name-based one. Move
+   it into a password manager and delete it after distribution.
+3. **Admin-side resets are a privileged local operation.** Anyone holding the
+   service-account key can reset a password. Treat that key like the fund's
+   bank credentials; it never belongs in the app or the repo.
+4. **`verify-identifier` cannot be run from this sandbox** against a real test
+   project (no credentials, and no production project may be touched). The
+   command is implemented and exercised against the Auth emulator in CI; the
+   real-project preflight remains a manual step (§4.5 of
+   `docs/USERNAME_LOGIN.md`) and must be run before bulk creation.
+5. **Legacy identities still keyed by a real email** are held. Once the gated deploy is
+   done (§3.2a) they are denied all financial access unless the owner has created an
+   authorization document for them. The planner keeps them out of creation, so no
+   duplicate profile or balance is made. Migrating them carries the *legacy lien* caveat
+   documented in `docs/USERNAME_LOGIN.md` §7.4.

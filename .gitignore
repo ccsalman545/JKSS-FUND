@@ -9,10 +9,20 @@ dist/
 
 # data / secrets
 backend/data.json
+archive/**/data.json
 *.db
 *.sqlite
 .env
 .env.*
+
+# JKSS-FUND v3.0 — student credentials + Firebase Admin SDK keys
+# (the local provisioning tool must never have its output committed)
+tools/provision/credentials.json
+tools/provision/credentials*.json
+tools/provision/reports/
+tools/provision/backups/
+*service-account*.json
+*firebase-adminsdk*.json
 
 # misc
 .DS_Store

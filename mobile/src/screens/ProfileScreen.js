@@ -11,7 +11,10 @@ import {
 } from '../components/ui';
 import { formatINR } from '../utils/format';
 import { palette } from '../theme';
-import { APP_NAME, COMMITTEE_SHARE_PCT, STUDENT_SHARE_PCT } from '../config';
+import {
+  APP_NAME, COMMITTEE_SHARE_PCT, STUDENT_SHARE_PCT, FORGOT_PASSWORD_HELP,
+} from '../config';
+import { validatePasswordPolicy, displayUsername } from '../identity';
 
 export default function ProfileScreen({ navigation }) {
   const { user, logout, updateProfile, biometricSupported, changePassword } = useAuth();
@@ -40,6 +43,9 @@ export default function ProfileScreen({ navigation }) {
     }
   };
 
+  const handle = displayUsername(user?.identifier || user?.username || '');
+  const isAdmin = user?.role === 'admin';
+
   const openPassword = () => {
     setOldPw('');
     setNewPw('');
@@ -53,8 +59,15 @@ export default function ProfileScreen({ navigation }) {
       setPwMsg({ type: 'error', text: 'Enter both passwords' });
       return;
     }
-    if (newPw.length < 6) {
-      setPwMsg({ type: 'error', text: 'New password must be at least 6 characters' });
+    // Same policy the provisioning tool's generated passwords satisfy; also
+    // rejects a password built from the student's own username/name.
+    const policy = validatePasswordPolicy(newPw, { username: handle, name: user?.full_name });
+    if (!policy.ok) {
+      setPwMsg({ type: 'error', text: policy.reason });
+      return;
+    }
+    if (newPw === oldPw) {
+      setPwMsg({ type: 'error', text: 'The new password must be different' });
       return;
     }
     setPwSaving(true);
@@ -83,7 +96,9 @@ export default function ProfileScreen({ navigation }) {
             </View>
             <View style={{ flex: 1, marginLeft: 14 }}>
               <Text style={styles.identityName} numberOfLines={1}>{user?.full_name || 'User'}</Text>
-              <Text style={styles.identityHandle} numberOfLines={1}>@{user?.username || ''}</Text>
+              <Text style={styles.identityHandle} numberOfLines={1}>
+                {user?.role === 'admin' ? (user?.identifier || '') : '@' + handle}
+              </Text>
               <Badge style={{ marginTop: 8, backgroundColor: 'rgba(255,255,255,0.18)' }} color="#fff">
                 {(user?.role || 'student').toUpperCase()}
               </Badge>
@@ -124,15 +139,15 @@ export default function ProfileScreen({ navigation }) {
             value={biometricSupported ? 'Enabled on app open' : 'Not available on device'}
             valueColor={biometricSupported ? theme.success : theme.textFaint}
           />
-          {user?.role === 'admin' ? (
-            <MenuRow
-              icon="key-outline"
-              tint={theme.accent}
-              label="Change password"
-              onPress={openPassword}
-              last
-            />
-          ) : null}
+          {/* Students AND the admin can change their own password. */}
+          <MenuRow
+            icon="key-outline"
+            tint={theme.accent}
+            label={isAdmin ? 'Change password' : 'Change temporary password'}
+            value={isAdmin ? undefined : 'Do this after your first sign-in'}
+            onPress={openPassword}
+            last
+          />
         </MenuCard>
 
         <Card style={styles.about}>
@@ -149,6 +164,20 @@ export default function ProfileScreen({ navigation }) {
           </View>
         </Card>
 
+        {!isAdmin ? (
+          <Card style={{ marginTop: 4 }}>
+            <View style={styles.aboutRow}>
+              <View style={[styles.aboutIcon, { backgroundColor: theme.infoSoft || theme.primarySoft }]}>
+                <Ionicons name="help-circle-outline" size={18} color={theme.info || theme.primary} />
+              </View>
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={[styles.aboutName, { color: theme.text }]}>Forgotten password</Text>
+                <Text style={[styles.aboutText, { color: theme.textMuted }]}>{FORGOT_PASSWORD_HELP}</Text>
+              </View>
+            </View>
+          </Card>
+        ) : null}
+
         <Button label="Log out" icon="log-out-outline" variant="danger" size="lg" onPress={logout} style={{ marginTop: 16 }} />
       </View>
       </FadeIn>
@@ -163,7 +192,7 @@ export default function ProfileScreen({ navigation }) {
         <Button label={saving ? 'Saving…' : 'Save'} loading={saving} onPress={saveName} size="lg" icon="checkmark-outline" />
       </Sheet>
 
-      <Sheet visible={pwSheet} onClose={() => setPwSheet(false)} title="Change password">
+      <Sheet visible={pwSheet} onClose={() => setPwSheet(false)} title={`Change password${isAdmin ? '' : ' — @' + handle}`}>
         <Input
           icon="lock-closed-outline"
           label="Current password"

@@ -19,6 +19,7 @@ import { APP_NAME } from './src/config';
 
 import SplashScreen from './src/screens/SplashScreen';
 import LoginScreen from './src/screens/LoginScreen';
+import NotAuthorizedScreen from './src/screens/NotAuthorizedScreen';
 import StudentDashboard from './src/screens/StudentDashboard';
 import TransactionsScreen from './src/screens/TransactionsScreen';
 import AdminDashboard from './src/screens/AdminDashboard';
@@ -199,7 +200,7 @@ function BiometricGate({ children }) {
 }
 
 function Root() {
-  const { user, loading } = useAuth();
+  const { user, loading, unauthorized } = useAuth();
   const { theme } = useTheme();
 
   if (loading) return <SplashScreen />;
@@ -207,7 +208,11 @@ function Root() {
     return (
       <View style={{ flex: 1, backgroundColor: theme.background }}>
         <Stack.Navigator screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="Login" component={LoginScreen} />
+          {/* Signed in but NOT pre-authorized by the admin → the only screen
+              the session can reach (no dashboard, no balances, no writes). */}
+          {unauthorized
+            ? <Stack.Screen name="NotAuthorized" component={NotAuthorizedScreen} />
+            : <Stack.Screen name="Login" component={LoginScreen} />}
         </Stack.Navigator>
       </View>
     );

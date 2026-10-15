@@ -1,10 +1,24 @@
-# JKSS-FUND (AiCoN FundMe) v3.2 — Firebase Edition
+# JKSS-FUND (AiCoN FundMe) v3.0 — Firebase Edition
 
 A **feature-rich, deployable Android app** for transparent hostel fund management, built
-with **React Native (Expo) + Firebase**. Students sign in with **Google** (once OAuth is
-configured) or email/password, the admin adds jobs, and the app automatically splits each
+with **React Native (Expo) + Firebase**. **Students sign in with a username and password
+their admin assigns** (no student email address is required, collected, or invented); the
+**admin** keeps signing in with the existing Firebase Email/Password account. The admin
+adds jobs, and the app automatically splits each
 payment **10% → committee fund / 90% → split among students (paise-exact)**. All amounts
 are in **Indian Rupees (₹)**.
+
+> **v3.0 — username logins for students.** Every student gets a stable username
+> (`thangal`, `muhsin.chelakkulam`, …) mapped deterministically to a synthetic Firebase
+> identifier (`<username>@students.jkss-fund.invalid`, an RFC 2606 non-deliverable domain),
+> provisioned by a one-time local tool ([`tools/provision`](./tools/provision)) that is
+> dry-run by default, generates **CSPRNG temporary passwords** (one per student, stored in
+> a git-ignored 0600 credentials file), never resets a password on a rerun, and never
+> creates a duplicate profile. Google Sign-In was **removed** (it was never configured —
+> `oauth_client: []` — and it required a Google account). The Firestore rules and the
+> paise-exact accounting are **unchanged**. Start with
+> **[`docs/USERNAME_LOGIN.md`](./docs/USERNAME_LOGIN.md)** (mapping, provisioning runbook,
+> password reset without email, migration plan, deployment checklist).
 
 > **v3.2 — Security & accounting hardening (final).** Least-privilege Firestore rules
 > written strictly within the verified rules language (no `filter`/lambda — see the
@@ -13,8 +27,8 @@ are in **Indian Rupees (₹)**.
 > **tombstone** reversals, and an automated test suite that runs the production rules
 > engine in CI on every push. See **[`SECURITY_REVIEW.md`](./SECURITY_REVIEW.md)** for
 > the vulnerability findings, the schema changes, the exact test/deploy commands, the
-> `app.json`/`.firebaserc`/OAuth configuration verification, and an honest "safe for
-> testing vs ready for real funds" assessment.
+> `app.json`/`.firebaserc` configuration verification, the v3.0 username-login
+> addendum, and an honest "safe for testing vs ready for real funds" assessment.
 
 The custom Express/SQLite backend has been **replaced by Firebase** (Authentication +
 Cloud Firestore + Security Rules), so there is **no server to run or host**.
@@ -36,16 +50,26 @@ JKSS-FUND/
 │   └── src/
 │       ├── firebase.js     # Native Firebase modules
 │       ├── api.js          # Firestore data layer (real-time)
-│       ├── config.js       # Google client IDs (EDIT)
+│       ├── identity.js     # username ↔ internal identifier mapping (single source of truth)
+│       ├── config.js       # App config (identifier domain, help copy)
 │       ├── context/        # Auth + Theme
 │       ├── components/ui.js
 │       └── screens/        # Login, Dashboards, Students, Jobs, Reports, Profile…
-└── firebase/               # Firebase console config (deploy with firebase-tools)
-    ├── firestore.rules     # Access control
-    ├── firestore.indexes.json
-    ├── firebase.json
-    ├── .firebaserc
-    └── README.md           # Firebase project setup
+├── tools/provision/        # One-time LOCAL provisioning tool (dry-run by default)
+│   ├── provision.js        #   plan / apply / verify-identifier / reset-password / migrate-identity
+│   ├── roster.json         #   the 24 names (no emails!)
+│   └── test/               #   pure-Node suites + the Auth/Firestore emulator E2E suite
+├── docs/USERNAME_LOGIN.md  # login model, runbook, migration plan, deployment checklist
+├── firebase/               # Firebase console config (deploy with firebase-tools)
+│   ├── firestore.rules     # Access control
+│   ├── firestore.indexes.json
+│   ├── firebase.json
+│   ├── .firebaserc
+│   └── README.md           # Firebase project setup
+└── archive/
+    └── legacy-express-web/ # ARCHIVED (v3.0): old Express/JWT API, Vite web UI, Dockerfile,
+                            # Procfile, and the six stray root snapshots. Not deployed; not built.
+                            # Read archive/legacy-express-web/README.md before touching anything.
 ```
 
 **Why `google-services.json`?** The native Firebase SDK reads it to initialize on Android,
@@ -64,7 +88,11 @@ so the build needs a (real) copy even though we use Firestore real-time instead 
 
 ## ✨ Features
 
-- 🔐 **Google Sign-In** (native) + admin **email/password** (Firebase Auth)
+- 🔐 **Student username/password sign-in** (admin-assigned, no student email needed) +
+  admin **email/password** (Firebase Auth); a signed-in account with no admin-authorized
+  profile sees only the "awaiting authorization" screen
+- 🗝️ **Change password** in-app for students and the admin (policy-checked), and an
+  admin-side reset flow for forgotten passwords (no email recovery exists — by design)
 - 📡 **Real-time** balances, jobs & transactions via Firestore listeners (updates the
   instant the admin adds a job — no polling, no push server needed)
 - 🔢 Automatic **10% / 90%** fund split, atomic per job
@@ -103,23 +131,33 @@ Built with core React Native `Animated` + `react-native-linear-gradient` (added 
 ## 🚀 1. Firebase (one-time)
 
 See **`firebase/README.md`**. In short:
-1. Create a Firebase project; enable **Google** + **Email/Password** auth.
+1. Create a Firebase project; enable **Email/Password** auth (Google sign-in is not used).
 2. Create a **Cloud Firestore** database.
 3. Add an **Android app** (`com.jkssfund.app`); download `google-services.json` → overwrite
    `mobile/google-services.json`.
-4. `cd firebase && firebase deploy --only firestore` (deploys rules + indexes).
+4. **Firestore rules are deployed last, as a gated step** — see
+   `docs/USERNAME_LOGIN.md` §8 (step 7). Merging code does not deploy them, and they must
+   not go live before the admin-profile check (step 5) and the `txnSeq` backfill (step 6).
 5. Create the **first admin**: add an Auth user in the console, then set that user's
    Firestore `users/{email}` doc `role` to `admin`.
+6. **Create the student logins once** with the local provisioning tool — see
+   **[`docs/USERNAME_LOGIN.md`](./docs/USERNAME_LOGIN.md)** §4 (dry run → `--apply` →
+   distribute the temporary passwords). Students never need an email address.
 
 ---
 
-## 🔧 2. Google OAuth clients
+## 🔧 2. Student logins (username → identifier)
 
-In Google Cloud Console → **Credentials**, create:
-- **Web client ID** → put in `mobile/src/config.js` (`GOOGLE_WEB_CLIENT_ID`).
-- **Android client ID** (package `com.jkssfund.app` + your SHA-1) → `GOOGLE_ANDROID_CLIENT_ID`.
+There is nothing to configure in a cloud console for student logins:
 
-> Students sign in with Google. Admins sign in with the email/password account you created.
+* the username → identifier mapping is a pure function in
+  [`mobile/src/identity.js`](./mobile/src/identity.js), shared by the app, the test suites
+  and the provisioning tool (a test fails if they ever disagree);
+* the identifier is `<username>@students.jkss-fund.invalid` — an RFC 2606 reserved,
+  non-deliverable domain, so no real email address is ever created;
+* provisioning is local and dry-run-first: `cd tools/provision && node provision.js`.
+  Google OAuth client IDs are **no longer part of this app** (removed in v3.0 — no code
+  depended on them; `mobile/google-services.json` never contained an OAuth client).
 
 ---
 
@@ -168,25 +206,47 @@ cd mobile
 node test/accounting.test.js
 node test/api.mock.test.js
 
-# Firestore security rules (needs Java 11+; local emulator, no production access):
+# Firestore security rules (needs Java 21+; local emulator, no production access):
 cd firebase
-npm install
-firebase emulators:exec --only firestore "node test/rules.test.js"
+npm ci
+firebase emulators:exec --project jkss-fund-local --only firestore "node test/rules.test.js"
+
+# Username login + provisioning (Node 18+, no Java needed):
+cd mobile           && npm test
+cd tools/provision  && npm test
+
+# Provisioning + login end-to-end (needs Java 21+; Auth + Firestore emulators):
+cd firebase
+firebase emulators:exec --project jkss-fund-e2e --only firestore,auth \
+  "node ../tools/provision/test/emulator.test.js"
 ```
 
 ---
 
 ## ✅ Pre-launch checklist
 - [x] `mobile/google-services.json` replaced with real Firebase config (project `jkss-fund`)
-- [ ] Firebase Auth (Google + Email/Password) enabled
+- [ ] Firebase Auth **Email/Password** enabled
 - [ ] **Security rules test suite executed and green** (`firebase emulators:exec --only firestore "node test/rules.test.js"`)
 - [ ] Legacy data migrated (see `SECURITY_REVIEW.md` §6.2) if the fund already has data
-- [ ] Firestore rules + indexes deployed (`firebase deploy --only firestore`)
+- [ ] Firestore rules deployed — **only** at `docs/USERNAME_LOGIN.md` §8 step 7, after the
+      admin-profile check (step 5) and the `txnSeq` backfill (step 6)
 - [ ] First admin `role` set to `admin` in Firestore (with `balancePaise: 0`)
-- [ ] Google Web + Android OAuth client IDs set in `mobile/src/config.js`
+- [ ] Student accounts provisioned (`node tools/provision/provision.js apply … --apply`) and
+      temporary passwords distributed privately
+- [ ] Identifier format verified in a non-production project
+      (`node tools/provision/provision.js verify-identifier …`)
 - [ ] AAB built and uploaded to Play Console (or APK for sideload)
-- [ ] Tested on a device: Google login, job add, student balance, withdrawal, job reversal
+- [ ] Tested on a device: **student username login**, student password change, job add,
+      student balance, withdrawal, job reversal, admin email login
 
 ---
 
 **Ready for the Play Store. 🎉**
+
+Other docs: **[`DEPLOY.md`](./DEPLOY.md)** (app build + provisioning + what to do
+about the superseded Express web app), **[`docs/USERNAME_LOGIN.md`](./docs/USERNAME_LOGIN.md)**
+(the complete login/provisioning/migration runbook),
+**[`SECURITY_REVIEW.md`](./SECURITY_REVIEW.md)** (findings, tests, console steps),
+**[`tools/provision/README.md`](./tools/provision/README.md)**,
+**[`mobile/PLAY_STORE.md`](./mobile/PLAY_STORE.md)**,
+**[`PRIVACY_POLICY.md`](./PRIVACY_POLICY.md)**.

@@ -10,7 +10,8 @@ import {
 } from '../components/ui';
 import { api } from '../api';
 import { formatINR } from '../utils/format';
-import { MAX_STUDENTS } from '../config';
+import { MAX_STUDENTS, STUDENT_EMAIL_DOMAIN } from '../config';
+import { identifierFor, isValidUsername, normalizeUsername } from '../identity';
 
 export default function StudentsScreen({ navigation }) {
   const { token } = useAuth();
@@ -41,11 +42,22 @@ export default function StudentsScreen({ navigation }) {
     );
   }, [students, query]);
 
+  // v3.0: the admin authorizes a student by USERNAME (no email address is
+  // needed or stored). The profile document is created at the synthetic
+  // identifier that username maps to — the exact ID the student's sign-in
+  // produces, which is what makes the login work.
+  const normalizedUsername = normalizeUsername(username);
+  const usernameValid = normalizedUsername ? isValidUsername(normalizedUsername) : null;
+
   const add = async () => {
     setErr('');
+    if (usernameValid === false) {
+      setErr('Usernames use letters, numbers, dots, dashes and underscores (3–48 characters).');
+      return;
+    }
     setSaving(true);
     try {
-      await api.addStudent(username.trim(), full_name.trim());
+      await api.addStudent(username, full_name);
       setShowAdd(false);
       setFull('');
       setUser('');
@@ -79,7 +91,7 @@ export default function StudentsScreen({ navigation }) {
 
       <Input
         icon="search-outline"
-        placeholder="Search by name or email"
+        placeholder="Search by name or username"
         autoCapitalize="none"
         value={query}
         onChangeText={setQuery}
@@ -133,22 +145,28 @@ export default function StudentsScreen({ navigation }) {
           onChangeText={(t) => { setFull(t); setErr(''); }}
         />
         <Input
-          icon="mail-outline"
-          label="Google email"
-          placeholder="e.g. salmaan@jkss.in"
+          icon="person-outline"
+          label="Assigned username"
+          placeholder="e.g. thangal"
           autoCapitalize="none"
+          autoCorrect={false}
+          prefix="@"
           value={username}
           onChangeText={(t) => { setUser(t); setErr(''); }}
-          error={err || undefined}
-          style={{ marginBottom: 8 }}
+          error={usernameValid === false ? 'Invalid username' : undefined}
+          style={{ marginBottom: 4 }}
         />
         <Text style={[styles.hint, { color: theme.textFaint }]}>
-          Pre-authorizes this exact Google email: the student signs in with
-          Google and gains access only because you added it here. A sign-in
-          with any other email is not granted a profile.
+          The student signs in with this username and password — no email address is needed.
+          {'\n\n'}Pre-authorizes the profile{' '}
+          <Text style={{ fontFamily: 'monospace' }}>
+            {usernameValid ? identifierFor(normalizedUsername) : '<username>@' + STUDENT_EMAIL_DOMAIN}
+          </Text>
+          {'\n'}A sign-in with any other username has no profile and cannot open the dashboard.
         </Text>
         <Text style={[styles.hint, { color: theme.textFaint }]}>
-          The student signs in with Google using this email. They are added to every future 90% split until removed.
+          Create the login itself with the admin tool (tools/provision) — it sets the username and a
+          one-time random password together. This sheet only pre-authorizes the profile.
         </Text>
         <Button
           label={saving ? 'Saving…' : 'Save student'}
