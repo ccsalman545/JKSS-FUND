@@ -173,7 +173,7 @@ async function countUsers() {
 
   /* ------------------------- 2. live plan (emulator) -------------------- */
   await check('`plan --project` reports 23 creatable + 1 held (legacy) + both admin docs preserved', () => {
-    const r = run(['plan', '--project', PROJECT, '--roster', ROSTER, '--out', OUT]).expectCode(0);
+    const r = run(['plan', '--project', PROJECT, '--roster', ROSTER, '--out', OUT, '--json']).expectCode(0);
     planOffline = r.json();
     eq(planOffline.scope, 'emulators');
     eq(planOffline.summary.rosterSize, 24);
@@ -409,7 +409,7 @@ async function countUsers() {
     eq(target.data().balancePaise, 12345, 'nothing may be overwritten');
   });
   await check('a re-plan no longer holds Salman (he now has his own profile) and creates no duplicate', async () => {
-    const r = run(['plan', '--project', PROJECT, '--roster', ROSTER, '--out', OUT]).expectCode(0);
+    const r = run(['plan', '--project', PROJECT, '--roster', ROSTER, '--out', OUT, '--json']).expectCode(0);
     const p = r.json();
     const salman = p.students.find((s) => s.name === 'Salman');
     eq(salman.status, 'exists');
@@ -432,7 +432,10 @@ async function countUsers() {
     return null;
   });
   await check('apply without credentials (live mode) explains the Admin SDK setup', () => {
-    const res = spawnSync(process.execPath, [CLI, 'apply', '--project', 'jkss-fund-test', '--apply'], {
+    // The typo gate is checked FIRST (so a mistake writes nothing); past it,
+    // the missing Admin SDK credentials are explained in full.
+    const res = spawnSync(process.execPath, [CLI, 'apply', '--project', 'jkss-fund-test',
+      '--confirm-project', 'jkss-fund-test', '--apply'], {
       cwd: REPO_ROOT,
       env: Object.assign({}, process.env, {
         FIREBASE_AUTH_EMULATOR_HOST: '', FIRESTORE_EMULATOR_HOST: '', GOOGLE_APPLICATION_CREDENTIALS: '',

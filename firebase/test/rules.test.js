@@ -839,7 +839,10 @@ test('v3.0: a synthetic student CANNOT pre-authorize another student', async () 
 test('v3.0: an UNAUTHORIZED synthetic account can read nothing and write nothing', async () => {
   await seedSynthetic();
   const db = authed(S3).firestore();
-  await assertFails(getDoc(doc(db, 'users/' + S3)));                 // own (missing) profile
+  // Reading your OWN profile id is permitted by `isSelf` — but there is no
+  // document there, so nothing is exposed (no balance, no roster, no ledger).
+  const own = await getDoc(doc(db, 'users/' + S3));
+  if (own.exists()) throw new Error('an unauthorized account unexpectedly HAS a profile');
   await assertFails(getDoc(doc(db, 'users/' + S1)));                 // another student
   await assertFails(getDocs(collection(db, 'users')));               // roster list (admin-only)
   await assertFails(getDoc(doc(db, 'users/' + S1 + '/transactions/' + 'earn_j-syn_' + S1)));
