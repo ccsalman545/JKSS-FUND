@@ -35,7 +35,7 @@ deployment checklist.
 | Firebase Auth credential | Google ID token *(or* real email/password *)* | Firebase **Email/Password** with a synthetic `<username>@students.jkss-fund.invalid` identifier |
 | Admin login | Email/password | **Unchanged** — same account, same password |
 | Student profiles | `users/{real-email}` pre-authorized by the admin | `users/{synthetic-identifier}` pre-authorized by the admin **or** created by the local provisioning tool |
-| Firestore rules | v3.5.2 least-privilege ruleset | **Unchanged, byte-for-byte.** The rules key everything on the token's email; the synthetic identifier *is* that email, so no rule needed to change |
+| Firestore rules | v3.5.2 least-privilege ruleset | The v3.0 login did not change them: the rules key everything on the token's email, and the synthetic identifier *is* that email. The later student gate **did** change them (verified email, pre-authorized `role: 'student'` profile, identifier or explicit authorization; SECURITY_REVIEW §3.2a) |
 | Accounting | Integer paise, atomic batches, tombstones | **Unchanged** — no balance, ledger, job, or committee semantics were touched |
 | Admin documents | two docs (`users/thrikkakarajkss`, `users/thrikkakarajkss@gmail.com`) | **Both preserved** — the tool never matches, rewrites, or deletes an admin profile (it only adds a missing `txnSeq: 0`) |
 
@@ -643,7 +643,13 @@ the rules' starting counter, so it is left in place. No money moved in this step
 **All prerequisites must be ticked. Any unticked item stops the step:**
 
 - [ ] The `Firestore rules` CI job on the merge commit is green, and its rules suite reports
-      111 passed, 0 failed. Section 14 of `firebase/test/rules.test.js` covers the held-account gate.
+      121 passed, 0 failed. Sections 14 and 15 of `firebase/test/rules.test.js` cover the held-account
+      gate and the pre-authorization gate (SECURITY_REVIEW §3.2a).
+- [ ] Every username account in Auth is **email-verified**, and every username profile has
+      `role: 'student'`. The gate denies both an unverified account and a profile with no role.
+      Check read-only: `firebase auth:export` to a file **outside the repository**, read the
+      `emailVerified` and role data, then delete the file (it contains password hashes). Any
+      account that fails this check is fixed by the owner before the deploy, not by the rules.
 - [ ] The owner has decided which real-email accounts keep access after the deploy. The default is
       **none**: every real-email account without an authorization document is denied from the moment
       the deploy completes. For each account the owner keeps, create `legacyAuthorizations/<email>`
@@ -728,8 +734,8 @@ change only at step 7, and the held students change only through §7.2.
 | `tools/provision/test/plan.test.js` | local + CI | **51 passed, 0 failed** — includes the D-1 frozen-profile checks; roster-hold validation and enforcement (incl. the explicit hold on a legacy-matched student),  roster → username, collision rules, ambiguity/weak-match handling, held-back students, admin preservation, safety gates, CLI parsing, **docs↔code mapping drift**, and **docs↔CLI drift** (every command/flag printed in these docs must exist in the tool) |
 | `tools/provision/test/apply.test.js` | local + CI | **4 passed, 0 failed** — D-1 through the real `apply` path (Firebase stubbed): a held legacy profile gets no Auth account, no profile and no `txnSeq`; eligible and former profiles are still backfilled; a roster hold freezes too |
 | `tools/provision/test/passwords.test.js` | local + CI | **15 passed, 0 failed** — CSPRNG passwords (20k uniqueness), unambiguous alphabet, policy compliance, 0600 credentials file, never-overwrite |
-| `firebase/test/rules.test.js` | CI (`Firestore rules`, emulator) | **111 scenarios, 0 failed** in the production rules engine (section 14: 22 held-account gate scenarios; CI run `38729530740` succeeded on `cd63dbe`). Before the gate: 89 passed (14 new synthetic-identifier scenarios: pre-authorization, unauthorized-account lockout, withdrawals/credits/reversals with synthetic ids, no rules loosening) |
-| `tools/provision/test/emulator.test.js` | CI (`provisioning-e2e`, Auth+Firestore emulators) | **31 passed, 0 failed** — a dry run creates no Auth user and touches no document, 23 accounts created idempotently, admin account+password and both admin docs preserved, balances/ledgers byte-identical, no plaintext password in Firestore, valid/invalid password sign-in, unauthorized student has no profile, reset-password, identity migration with backup, safety gates |
+| `firebase/test/rules.test.js` | CI (`Firestore rules`, emulator) | **121 scenarios** in the production rules engine (section 14: 22 held-account gate scenarios; section 15: 10 pre-authorization gate scenarios; the 111-scenario run `38729530740` succeeded on `cd63dbe`). The 121 count is confirmed only by the CI run on the verification-gate commit. Before the gate: 89 passed (14 new synthetic-identifier scenarios: pre-authorization, unauthorized-account lockout, withdrawals/credits/reversals with synthetic ids, no rules loosening) |
+| `tools/provision/test/emulator.test.js` | CI (`provisioning-e2e`, Auth+Firestore emulators) | **37 checks** (31 before the pre-authorization gate, plus 6 in §6b that read through the rules with real ID tokens; the CI run on the verification-gate commit confirms the result) — a dry run creates no Auth user and touches no document, 23 accounts created idempotently, admin account+password and both admin docs preserved, balances/ledgers byte-identical, no plaintext password in Firestore, valid/invalid password sign-in, unauthorized student has no profile, reset-password, identity migration with backup, safety gates |
 
 Exact commands (also in `SECURITY_REVIEW.md` §5):
 

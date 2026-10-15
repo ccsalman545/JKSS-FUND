@@ -81,8 +81,9 @@ a synthetic **email-shaped** identifier for Firebase Authentication:
 `<username>@students.jkss-fund.invalid` (RFC 2606 `.invalid` — never registrable,
 never deliverable). The same string is the `users/{identifier}` document ID, the
 owner of `users/{identifier}/transactions/*`, and the key inside
-`jobs/{job}.allocations`. **The rules are unchanged** — they key on the token's
-email, which is this identifier. See `../docs/USERNAME_LOGIN.md`.
+`jobs/{job}.allocations`. The v3.0 login did **not** change the rules — they key on the token's
+email, which is this identifier. The later student gate does change them: a verified email, a
+pre-authorized `role: 'student'` profile, and this identifier are all required (SECURITY_REVIEW §3.2a). See `../docs/USERNAME_LOGIN.md`.
 
 ## 5. Test the security rules (run before deploying)
 The full rules test suite (`test/rules.test.js`) runs the rules in the real
@@ -97,8 +98,8 @@ firebase emulators:exec --project jkss-fund-local --only firestore "node test/ru
 ```
 
 The command starts a throwaway local emulator (project `jkss-fund-local`),
-loads `firestore.rules`, runs 111 authorized/unauthorized scenarios (including the held-account gate, section 14) (including
-the v3.0 synthetic student identifiers), and prints a pass/fail summary. It
+loads `firestore.rules`, runs 121 authorized/unauthorized scenarios (including the held-account gate, section 14, and the
+pre-authorization gate, section 15, plus the v3.0 synthetic student identifiers), and prints a pass/fail summary. It
 never touches your production project.
 
 The **provisioning + username-login end-to-end suite** uses the Auth and

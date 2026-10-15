@@ -59,6 +59,20 @@ const LEGACY_TXNS = ['earn_j1_' + LEGACY_ID, 'earn_j2_' + LEGACY_ID, 'w_' + LEGA
 
 let pass = 0;
 let fail = 0;
+// Read ONE document through the Firestore emulator REST API as a signed-in
+// account, using its real ID token from the Auth emulator. The emulator
+// evaluates firebase/firestore.rules for that token, so this is the end-to-end
+// proof of the student gate. Returns the HTTP status: 200 = the rules allowed
+// the read, 403 = the rules denied it.
+async function restGet(idToken, docPath) {
+  const url = 'http://' + process.env.FIRESTORE_EMULATOR_HOST + '/v1/projects/' + PROJECT +
+    '/databases/(default)/documents/' + docPath;
+  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + idToken } });
+  return res.status;
+}
+// '@' is a legal path character, so keep it literal (no %40 for the emulator to decode).
+const enc = (id) => encodeURI(id);
+
 async function check(name, fn) {
   try {
     await fn();
@@ -320,6 +334,64 @@ async function countUsers() {
     ok(res.ok, 'the account itself can sign in (documents the gate)');
     const snap = await db.collection('users').doc(identity.identifierFor('unauthorized')).get();
     eq(snap.exists, false, 'NO profile may exist for an account the admin never authorized');
+  });
+
+  /* ------------------- 6b. the student gate, through the rules ------------ */
+  // Every check below uses a real ID token minted by the Auth emulator and
+  // the rules in firebase/firestore.rules (loaded by `firebase emulators:exec`).
+  await check('rules: a pre-authorized, verified username student reads its own profile and the committee', async () => {
+    const id = identity.identifierFor('thangal');
+    const res = await signInWithPassword({ identifier: id, password: createdPasswords.get('thangal') });
+    ok(res.ok, 'sign-in failed: ' + res.code);
+    eq(await restGet(res.idToken, 'users/' + enc(id)), 200, 'own profile must be readable');
+    eq(await restGet(res.idToken, 'meta/committee'), 200, 'committee must be readable');
+  });
+  await check('rules: that username student is DENIED another student profile', async () => {
+    const res = await signInWithPassword({ identifier: identity.identifierFor('thangal'), password: createdPasswords.get('thangal') });
+    ok(res.ok, 'sign-in failed: ' + res.code);
+    eq(await restGet(res.idToken, 'users/' + enc(identity.identifierFor('shafi'))), 403, 'another profile');
+  });
+  await check('rules: an UNPROVISIONED account (no profile) is denied the committee and profiles', async () => {
+    const id = identity.identifierFor('unauthorized');
+    const res = await signInWithPassword({ identifier: id, password: 'Rogue123!x' });
+    ok(res.ok, 'sign-in failed: ' + res.code);
+    eq(await restGet(res.idToken, 'meta/committee'), 403, 'committee');
+    eq(await restGet(res.idToken, 'users/' + enc(id)), 403, 'own (missing) profile');
+  });
+  await check('rules: a pre-authorized profile with an UNVERIFIED email is denied (squatter)', async () => {
+    // The admin pre-authorizes a student; someone then self-registers the same
+    // address WITHOUT verifying it. The profile exists, but the token says
+    // email_verified: false, so the gate must still refuse.
+    const id = identity.identifierFor('squatter');
+    const password = 'Squat123!x';
+    await db.collection('users').doc(id).set({
+      email: id, role: 'student', full_name: 'Squatter', avatar: '',
+      balancePaise: 0, balance: 0, txnSeq: 0, createdAt: Date.now(),
+    });
+    try {
+      const user = await auth.createUser({ email: id, password, emailVerified: false });
+      const res = await signInWithPassword({ identifier: id, password });
+      ok(res.ok, 'sign-in failed: ' + res.code);
+      eq(await restGet(res.idToken, 'meta/committee'), 403, 'committee');
+      eq(await restGet(res.idToken, 'users/' + enc(id)), 403, 'own profile');
+      await auth.deleteUser(user.uid);
+    } finally {
+      // Remove the squatter fixture so later plan/apply checks see the real roster only.
+      await db.collection('users').doc(id).delete();
+    }
+  });
+  await check('rules: a HELD legacy account (profile, no authorization) is denied its own profile and the committee', async () => {
+    const res = await signInWithPassword({ identifier: LEGACY_ID, password: LEGACY_PASSWORD });
+    ok(res.ok, 'sign-in failed: ' + res.code);
+    eq(await restGet(res.idToken, 'users/' + enc(LEGACY_ID)), 403, 'held own profile');
+    eq(await restGet(res.idToken, 'meta/committee'), 403, 'held committee');
+  });
+  await check('rules: the ADMIN keeps its access (own profile, committee, roster)', async () => {
+    const res = await signInWithPassword({ identifier: ADMIN_EMAIL, password: ADMIN_PASSWORD });
+    ok(res.ok, 'admin sign-in failed: ' + res.code);
+    eq(await restGet(res.idToken, 'users/' + enc(ADMIN_EMAIL)), 200, 'admin own profile');
+    eq(await restGet(res.idToken, 'meta/committee'), 200, 'committee');
+    eq(await restGet(res.idToken, 'users'), 200, 'roster');
   });
 
   /* -------------------------- 7. verify-identifier ---------------------- */

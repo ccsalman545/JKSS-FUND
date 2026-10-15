@@ -53,7 +53,13 @@ let fail = 0;
 const tests = [];
 function test(name, fn) { tests.push([name, fn]); }
 
-const authed = (email) => env.authenticatedContext('uid-' + email.replace(/[^a-z0-9]/g, ''), { email });
+// Sign-in contexts. Every real account the provisioning tool or an admin
+// creates has a VERIFIED email (email_verified: true in the ID token).
+// authedUnverified() models a self-registered account whose email was never
+// verified (the squatting case the studentAccessOk() gate must refuse).
+const uidOf = (email) => 'uid-' + email.replace(/[^a-z0-9]/g, '');
+const authed = (email) => env.authenticatedContext(uidOf(email), { email, email_verified: true });
+const authedUnverified = (email) => env.authenticatedContext(uidOf(email), { email, email_verified: false });
 const adminCtx = () => authed(ADMIN);
 const anonCtx = () => env.unauthenticatedContext();
 
@@ -848,10 +854,11 @@ test('v3.0: a synthetic student CANNOT pre-authorize another student', async () 
 test('v3.0: an UNAUTHORIZED synthetic account can read nothing and write nothing', async () => {
   await seedSynthetic();
   const db = authed(S3).firestore();
-  // Reading your OWN profile id is permitted by `isSelf` — but there is no
-  // document there, so nothing is exposed (no balance, no roster, no ledger).
-  const own = await getDoc(doc(db, 'users/' + S3));
-  if (own.exists()) throw new Error('an unauthorized account unexpectedly HAS a profile');
+  // Reading your OWN profile id is denied: the student gate requires a
+  // pre-authorized profile, and this account has none. The committee balance
+  // is a student-only read, so it is denied too.
+  await assertFails(getDoc(doc(db, 'users/' + S3)));
+  await assertFails(getDoc(doc(db, 'meta/committee')));
   await assertFails(getDoc(doc(db, 'users/' + S1)));                 // another student
   await assertFails(getDocs(collection(db, 'users')));               // roster list (admin-only)
   await assertFails(getDoc(doc(db, 'users/' + S1 + '/transactions/' + 'earn_j-syn_' + S1)));
@@ -1198,3 +1205,120 @@ test('held legacy: the username (synthetic) path is NOT affected by the gate', a
   await assertSucceeds(withdrawalBatch(db, S1, 240000, 1, 10000).commit());
 });
 
+/* =====================================================================
+   15. Pre-authorization gate: verified email + pre-authorized profile
+   A student financial path needs ALL of: a VERIFIED email, a users/{email}
+   profile with role 'student' (created only by an admin), and EITHER a
+   username identifier OR a legacyAuthorizations document. These scenarios
+   try each way an account could get past one of those checks, and confirm
+   that the legitimate paths (pre-authorized username student, authorized
+   legacy student, admin) still work.
+   ===================================================================== */
+
+// Every student path an account WITHOUT a usable profile could try.
+// `own` is the account's own identifier; `other` is another student.
+async function assertNoStudentAccess(db, own, other) {
+  await assertFails(getDoc(doc(db, 'meta/committee')));                       // committee balance
+  await assertFails(getDoc(doc(db, 'users/' + own)));                         // own profile
+  await assertFails(getDocs(collection(db, 'users/' + own + '/transactions'))); // own ledger
+  await assertFails(withdrawalBatch(db, own, 240000, 1, 10000).commit());      // own withdrawal
+  await assertFails(updateDoc(doc(db, 'users/' + own), { balancePaise: 0, balance: 0 }));
+  await assertFails(getDoc(doc(db, 'users/' + other)));                       // another student
+  await assertFails(withdrawalBatch(db, other, 240000, 1, 10000).commit());   // another's withdrawal
+}
+
+test('pre-auth: a synthetic account with NO profile cannot read the committee, another student, or the roster', async () => {
+  await seedSynthetic();
+  const db = authed(S3).firestore();
+  await assertNoStudentAccess(db, S3, S1);
+  await assertFails(getDocs(collection(db, 'users')));                        // roster
+  await assertFails(getDocs(collectionGroup(db, 'transactions')));            // every ledger
+  await assertFails(getDocs(collection(db, 'jobs')));
+});
+
+test('pre-auth: a synthetic account with NO profile cannot create a financial transaction or change any balance', async () => {
+  await seedSynthetic();
+  const db = authed(S3).firestore();
+  await assertFails(setDoc(doc(db, 'users/' + S3 + '/transactions/w_' + S3 + '_1'), {
+    type: 'withdrawal', studentId: S3, amountPaise: 1, amount: 0.01, seq: 1,
+  }));
+  await assertFails(setDoc(doc(db, 'users/' + S1 + '/transactions/w_' + S1 + '_2'), {
+    type: 'withdrawal', studentId: S1, amountPaise: 1, amount: 0.01, seq: 2,
+  }));
+  await assertFails(setDoc(doc(db, 'users/' + S3 + '/transactions/earn_x_' + S3), {
+    type: 'earning', studentId: S3, jobId: 'x', amountPaise: 100, amount: 1,
+  }));
+  await assertFails(updateDoc(doc(db, 'users/' + S1), { balancePaise: 0, balance: 0 }));
+  await assertFails(updateDoc(doc(db, 'meta/committee'), { balancePaise: 0, balance: 0 }));
+  await assertFails(setDoc(doc(db, 'users/' + S3), PLANNED_SHAPE));
+});
+
+test('pre-auth: a profile whose role is NOT student (guest) gives no student access, even with a verified email', async () => {
+  await seedSynthetic();
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), 'users/' + S1), {
+      email: S1, role: 'guest', full_name: 'Thangal', avatar: '', balancePaise: 250000, balance: 2500, txnSeq: 0,
+    });
+  });
+  await assertNoStudentAccess(authed(S1).firestore(), S1, S2);
+});
+
+test('pre-auth: a profile with NO role field gives no student access', async () => {
+  await seedSynthetic();
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), 'users/' + S1), {
+      email: S1, full_name: 'Thangal', avatar: '', balancePaise: 250000, balance: 2500, txnSeq: 0,
+    });
+  });
+  await assertNoStudentAccess(authed(S1).firestore(), S1, S2);
+});
+
+test('pre-auth: an UNVERIFIED email gets no student access, even with a valid pre-authorized profile', async () => {
+  await seedSynthetic();
+  // S1 has a pre-authorized profile (role student, balance 2500). A squatter
+  // who registered the same address without verifying it must get nothing.
+  await assertNoStudentAccess(authedUnverified(S1).firestore(), S1, S2);
+});
+
+test('pre-auth: an UNVERIFIED email with a legacy authorization is denied too', async () => {
+  await seedHeld(H_OK);
+  await setAuthorization(H_OK, { email: H_OK, authorized: true });
+  await assertNoStudentAccess(authedUnverified(H_OK).firestore(), H_OK, S1);
+});
+
+test('pre-auth: a legacy AUTHORIZATION with NO profile gives no student access', async () => {
+  const X = 'ghost.legacy@gmail.com';
+  await seedSynthetic();
+  await setAuthorization(X, { email: X, authorized: true });
+  await assertNoStudentAccess(authed(X).firestore(), X, S1);
+});
+
+test('pre-auth: a pre-authorized, verified username student keeps every legitimate student operation', async () => {
+  await seedSynthetic();
+  const db = authed(S1).firestore();
+  await assertSucceeds(getDoc(doc(db, 'users/' + S1)));                              // own profile
+  await assertSucceeds(getDoc(doc(db, 'meta/committee')));                           // committee
+  await assertSucceeds(getDocs(collection(db, 'users/' + S1 + '/transactions')));    // own ledger
+  await assertSucceeds(withdrawalBatch(db, S1, 240000, 1, 10000).commit());          // withdrawal
+  await assertSucceeds(withdrawalBatch(db, S1, 230000, 2, 10000).commit());          // a second one
+  await assertSucceeds(updateDoc(doc(db, 'users/' + S1), { full_name: 'Thangal K' })); // profile edit
+});
+
+test('pre-auth: an AUTHORIZED legacy student with a profile and a verified email keeps its access', async () => {
+  await seedHeld(H_OK);
+  await setAuthorization(H_OK, { email: H_OK, authorized: true });
+  const db = authed(H_OK).firestore();
+  await assertSucceeds(getDoc(doc(db, 'users/' + H_OK)));
+  await assertSucceeds(getDoc(doc(db, 'meta/committee')));
+  await assertSucceeds(withdrawalBatch(db, H_OK, 6500, 4, 1000).commit());
+});
+
+test('pre-auth: admin keeps its reads (roster, every ledger, jobs, committee) and its own profile', async () => {
+  await seedSynthetic();
+  const db = adminCtx().firestore();
+  await assertSucceeds(getDoc(doc(db, 'users/' + ADMIN)));
+  await assertSucceeds(getDoc(doc(db, 'meta/committee')));
+  await assertSucceeds(getDocs(collection(db, 'users')));
+  await assertSucceeds(getDocs(collection(db, 'users/' + S1 + '/transactions')));
+  await assertSucceeds(getDocs(collection(db, 'jobs')));
+});

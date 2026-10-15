@@ -35,12 +35,13 @@ rules_version = '2';
 // only (by an admin or the console, at create-time) and can never be
 // updated, so the admin set can only grow through the two create rules.
 //
-// STUDENT ACCESS GATE (held legacy accounts): a student's financial paths
-// (own profile read/write, own ledger read, withdrawals, committee read)
-// require a USERNAME identifier (<username>@students.jkss-fund.invalid) or an
-// explicit legacyAuthorizations/{email} document with authorized == true.
-// Any other real-email account is on hold and reads/writes nothing financial.
-// Admins are unchanged.
+// STUDENT ACCESS GATE: a student's financial paths (own profile read/write,
+// own ledger read, withdrawals, committee read) require a VERIFIED email, a
+// PRE-AUTHORIZED users/{email} profile with role 'student', and EITHER a
+// USERNAME identifier (<username>@students.jkss-fund.invalid) OR an explicit
+// legacyAuthorizations/{email} document with authorized == true. Any other
+// account reads/writes nothing financial (real-email legacy accounts are on
+// hold). Admins are unchanged. See studentAccessOk().
 //
 // STUDENT PRE-AUTHORIZATION: profile documents are created ONLY by admins
 // (or the console). There is NO self-provisioning path — a signed-in
@@ -139,17 +140,21 @@ service cloud.firestore {
     }
 
     /* ----------------- student access gate (held legacy accounts) -------
-       A signed-in account may use ANY student financial path only when:
-         (1) its Auth email is a USERNAME identifier
-             (<username>@students.jkss-fund.invalid — the v3.0 login); or
-         (2) an explicit authorization exists at
-             legacyAuthorizations/{email} with authorized == true (written
-             only by an admin in the Firebase console / admin SDK).
-       Any other real-email account is a legacy student ON HOLD (Option B):
-       it reads and writes no financial data, even when its users/{email}
-       profile still exists with a balance and a txnSeq. Admins keep their
-       access through isAdmin() and selfAccessOk(); nothing here changes
-       what an admin can do.
+       A signed-in account may use ANY student financial path only when ALL
+       of these hold (studentAccessOk):
+         (a) its Auth email is VERIFIED (token email_verified == true);
+         (b) it has a PRE-AUTHORIZED profile: users/{email} exists with
+             role == 'student' (created only by an admin);
+         (c) EITHER its Auth email is a USERNAME identifier
+             (<username>@students.jkss-fund.invalid — the v3.0 login), OR an
+             explicit authorization exists at legacyAuthorizations/{email}
+             with authorized == true (written only by an admin in the
+             Firebase console / admin SDK).
+       Any other account is not a student for financial purposes: a real-email
+       account without (c) is a legacy student ON HOLD (Option B), even when
+       its users/{email} profile still exists with a balance and a txnSeq.
+       Admins keep their access through isAdmin() and selfAccessOk(); nothing
+       here changes what an admin can do.
        This is a rules-level freeze. The provisioning tool's txnSeq freeze
        (decision D-1) is a separate, tool-level control.                  */
     function usernameIdentifier(e) {
@@ -161,11 +166,29 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/legacyAuthorizations/$(e)).data.authorized == true;
     }
 
+    // A PRE-AUTHORIZED student profile: users/{email} exists and its role is
+    // exactly 'student'. Profiles are created only by an admin (or the
+    // console), never by a student, so the document's existence IS the
+    // admin's authorization. A missing profile, a missing role field, or any
+    // other role denies (an absent field propagates as deny).
+    function studentProfileOk(e) {
+      return exists(/databases/$(database)/documents/users/$(e))
+        && get(/databases/$(database)/documents/users/$(e)).data.role == 'student';
+    }
+
+    // The sign-in email must be VERIFIED. Synthetic identifiers use the
+    // non-deliverable .invalid domain, so no verification mail can ever reach
+    // them: a self-registered synthetic account can never be verified. Admin-
+    // created accounts are (the provisioning tool sets emailVerified: true).
+    // Without this check anyone could sign up with a pre-authorized address
+    // before its owner and inherit that student's access.
     function studentAccessOk() {
       return signedIn()
         && request.auth.token.email is string
+        && request.auth.token.email_verified == true
         && (usernameIdentifier(request.auth.token.email)
-            || legacyAuthorized(request.auth.token.email));
+            || legacyAuthorized(request.auth.token.email))
+        && studentProfileOk(request.auth.token.email);
     }
 
     // Self paths: an authorized student, or an admin (admin self-access is

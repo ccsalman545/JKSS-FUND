@@ -8,7 +8,8 @@ assessment of what is and is *not* safe for real money.
 
 **Status:** implementation + executable tests complete on branch
 `arena/dc657e31-jkss-fund` (tip `3cbe1da`). **v3.0 addendum (username logins):
-`firestore.rules` is unchanged; see §11.** The rules suite is
+the username login did not change `firestore.rules`; see §11. The later held-account and pre-authorization
+gate DID change the rules; see §3.2a.** The rules suite is
 **executed in GitHub Actions CI** (Firestore emulator, production rules
 engine) — see §4. Latest run **38704744622: SUCCESS — 75/75 rules scenarios
 passed, 0 failure annotations**; Node suites green in the same run. Rules
@@ -141,7 +142,7 @@ rules**; it added:
 | `mobile/test/identity.test.js` | **New** — 63 executed tests (normalization, collisions, identifier mapping, policy, 20k fuzz) |
 | `mobile/test/api.mock.test.js` | Extended to **37 tests** (username login with real `auth/*` codes, identical error text for unknown-user vs wrong-password, ledger identity) |
 | `tools/provision/**` | **New** — the local provisioning tool + 3 suites (plan 36, passwords 15, emulator E2E 31) |
-| `firebase/test/rules.test.js` | **111 scenarios** (89 before the held-account gate, plus 22 in section 14 — see §3.2a) |
+| `firebase/test/rules.test.js` | **121 scenarios** (89 before the held-account gate, +22 in section 14, +10 in section 15 — see §3.2a) |
 | `.github/workflows/username-login.yml` | **New** — node suites + Auth/Firestore emulator E2E job |
 | `docs/USERNAME_LOGIN.md`, `tools/provision/README.md`, `README.md`, `PRIVACY_POLICY.md`, `mobile/PLAY_STORE.md`, `SECURITY_REVIEW.md`, `firebase/README.md` | Documentation for the above |
 
@@ -289,22 +290,38 @@ Access-gate helpers (held legacy accounts, §3.2a): `usernameIdentifier(e)`,
 - **`/transactions/{txnId}`** (legacy) — read: admin; all writes denied
 - **Catch-all** — explicit deny for everything else
 
-### 3.2a Student access gate (held legacy accounts)
+### 3.2a Student access gate (held legacy accounts and pre-authorization)
 
 **Threat.** Before this gate, a real-email account that had a `users/{email}`
 profile (a legacy student on hold, Option B) could read its own balance and ledger,
 and could withdraw from its own balance. The rules only asked "is this my own
-document?", so the hold existed only in the provisioning tool.
+document?", so the hold existed only in the provisioning tool. A later review also
+found that a signed-in synthetic identifier could read the committee balance without
+any profile check, and that the sign-in email was not verified (see the rationale below).
 
-**Rule.** A signed-in account may use a student financial path only when:
+**Rule.** A signed-in account may use a student financial path only when all of these
+hold (`studentAccessOk()`):
 
-1. its Auth email matches `^[a-z0-9._-]+@students[.]jkss-fund[.]invalid$` (the v3.0
-   username identifier); **or**
-2. `legacyAuthorizations/{email}` exists with `authorized == true`. Only an admin
-   can read that collection. Clients cannot write it. The owner creates it in the
-   console or with an admin SDK script, which is a manual, approved production write.
+1. its sign-in email is **verified** (`request.auth.token.email_verified == true`);
+2. `users/{email}` **exists with `role == 'student'`**. Only an admin (or the console)
+   can create that profile, so the profile is the admin's pre-authorization. A missing
+   profile, a missing `role` field, or any other role denies;
+3. **either** its email is a username identifier (`^[a-z0-9._-]+@students[.]jkss-fund[.]invalid$`,
+   the v3.0 login), **or** `legacyAuthorizations/{email}` exists with `authorized == true`.
+   Only an admin can read that collection. Clients cannot write it. The owner creates it
+   in the console or with an admin SDK script, which is a manual, approved production write.
 
-Any other real-email account is held. It reads and writes no financial data.
+Any other account reads and writes no financial data. A real-email account without
+item 3 is a legacy student on hold.
+
+**Why the verified-email check (item 1).** The profile check alone is not enough. The app
+ships the public Web API key, and email/password sign-up is open unless the owner has
+turned it off. Without item 1, someone could register `<username>@students.jkss-fund.invalid`
+or a legacy student's real address before its owner, and inherit the profile that
+already exists. Synthetic identifiers use the `.invalid` domain, which can never receive
+mail, so no verification can ever complete for a self-registered synthetic account. The
+provisioning tool creates every student account with `emailVerified: true`
+(`tools/provision/lib/firebase.js`).
 
 **Gated paths** (`studentAccessOk()` / `selfAccessOk()`):
 
@@ -314,20 +331,35 @@ Any other real-email account is held. It reads and writes no financial data.
 | `users/{self}` update (profile or withdrawal) | self | self **and gate** |
 | `users/{self}/transactions` get/list | self | self **and gate** |
 | `users/{self}/transactions` create (withdrawal) | self | self **and gate** |
-| `meta/committee` get / create | any signed-in account | **gate** (username accounts still read it) |
+| `meta/committee` get / create | any signed-in account | **gate** |
 | `legacyAuthorizations/{email}` | (none) | admin read only; no client write |
 
 Admin paths are unchanged: user list and any profile or ledger read, job credit and
-reversal, reconciliation, the legacy `/transactions` audit read. `selfAccessOk()` also
-keeps an admin's own self-access as it was.
+reversal, reconciliation, the legacy `/transactions` audit read. `isAdmin()` does **not**
+check email verification. The existing admin account is preserved as it is, and an admin
+check added without verifying that account could lock the owner out (see residual 5).
+`selfAccessOk()` keeps an admin's own self-access as it was.
 
-**Tests.** `firebase/test/rules.test.js` §14 (22 scenarios, run in CI by the production
-rules engine) covers: no read or write of the profile, ledger, committee or jobs; no
-withdrawal by any shape (atomic batch, companion-only, balance-only, bundled with a
-committee write); no self-authorization; a look-alike domain is still held; revoking,
-a missing `authorized` field, or another email's authorization keeps the account
-held. The authorized account works, admin reconciliation works, a legitimate job
-reversal of a held allocation still succeeds, and the username path is unchanged.
+**Tests.**
+* `firebase/test/rules.test.js` §14 (22 scenarios): held legacy accounts have no read or
+  write of the profile, ledger, committee or jobs, no withdrawal by any shape, no
+  self-authorization. A look-alike domain stays held, and revoking, a missing
+  `authorized` field, or another email's authorization keeps the account held.
+* `firebase/test/rules.test.js` §15 (10 scenarios): a synthetic account with **no profile**
+  reads no committee balance, no other student, no roster, no ledger; creates no
+  financial transaction; changes no balance. A profile with role `guest`, or with no
+  `role`, gets nothing. An **unverified** email gets nothing, even with a valid profile,
+  and so does an unverified legacy authorization. A legacy authorization with **no
+  profile** gets nothing. The legitimate paths still work: a pre-authorized, verified
+  username student reads its profile, the committee and its ledger, and withdraws; an
+  authorized legacy student keeps access; admin keeps every admin read.
+* `tools/provision/test/emulator.test.js` §6b (E2E, real ID tokens): the Auth emulator
+  issues ID tokens, and the suite reads through the Firestore emulator REST API with
+  `Authorization: Bearer <token>`, so the rules judge the real `email_verified` claim.
+  It checks: a provisioned username student reads its own profile and the committee and
+  is denied another student's profile; an unprovisioned account is denied the committee
+  and profiles; a pre-authorized profile whose email is unverified is denied; the held
+  legacy account is denied its own profile and the committee; the admin keeps its access.
 
 **Residuals (honest list).**
 1. **Not in force until deployed.** The live project still runs its existing ruleset.
@@ -337,11 +369,24 @@ reversal of a held allocation still succeeds, and the username path is unchanged
    unmatched former students as well as held ones. Each account the owner wants to keep
    needs an authorization document first.
 3. **Rollback re-opens held accounts.** Restoring the previous rules removes the gate.
-4. **Client sign-up.** If Email/Password sign-up is open in the project, a client can
-   create an Auth account for any valid address with the public web API key. Such an
-   account can have a synthetic identifier at most. It still needs an admin-created
-   profile to reach any financial data, and the gate does not change that. The owner
-   should check the Auth sign-up setting in the console.
+4. **Pre-deploy data checks.** The gate needs every username account to be email-verified
+   and every username profile to have `role: 'student'`. Accounts created by the tool
+   satisfy both. A console-created account, or a profile without a `role` field, would
+   lose access on deploy. Check both before step 7 (runbook §8). The check is read-only:
+   `firebase auth:export` to a file **outside the repository**, then delete the file,
+   because it contains password hashes.
+5. **The admin account is not verification-gated.** `isAdmin()` is unchanged. Adding the
+   same verified-email check to admin is a reasonable follow-up, but only after the owner
+   confirms the admin Auth account is verified. Otherwise the owner could be locked out.
+6. **Username regex is looser than the app's.** The rules accept leading, trailing or
+   doubled separators (for example `a..b`) that `mobile/src/identity.js` never issues. That
+   is not a bypass, because only accounts already on the synthetic domain can match. The
+   app's exact form needs no lookahead, so the rules could use it:
+   `^[a-z0-9]+([._-][a-z0-9]+)*@students[.]jkss-fund[.]invalid$`. Changing it is a separate
+   change, and it needs a check of existing usernames first.
+7. **Removed students keep their access.** A tombstoned (`removedAt`) student still reads
+   its own balance and can withdraw. This is the existing behaviour, and the gate does not
+   change it. It is a policy question for the owner.
 
 ### 3.3 Schema / data-model changes
 
@@ -517,7 +562,7 @@ node test/passwords.test.js      # 15 passed, 0 failed  CSPRNG + credentials fil
 cd firebase
 npm ci
 firebase emulators:exec --project jkss-fund-local --only firestore "node test/rules.test.js"
-#   → 111 passed, 0 failed
+#   → 121 passed, 0 failed
 firebase emulators:exec --project jkss-fund-e2e --only firestore,auth \
   "node ../tools/provision/test/emulator.test.js"
 #   → 31 passed, 0 failed  (real accounts created/signed-in/deleted in the emulator)
@@ -896,7 +941,7 @@ account; the completed security and accounting work stays intact.
 
 | | |
 |---|---|
-| `firebase/firestore.rules` | **Unchanged, byte-for-byte.** No rule was added, relaxed or removed to make the login work. The rules already resolve identity from `request.auth.token.email`, and a student's auth email *is* the synthetic identifier (below) |
+| `firebase/firestore.rules` | **Unchanged by the v3.0 login work** (historical; the held-account and pre-authorization gate changed the rules later, §3.2a). No rule was added, relaxed or removed to make the login work. The rules already resolve identity from `request.auth.token.email`, and a student's auth email *is* the synthetic identifier (below) |
 | Student identity | `users/{identifier}` where `identifier = <username>@students.jkss-fund.invalid` — the same string that Firebase Authentication stores as the account's email, the same string used for `users/{id}/transactions/*` and for `jobs/{job}.allocations` keys |
 | Admin identity | Unchanged: the existing Auth account; `users/{admin-email}` + the legacy `users/thrikkakarajkss` document. **Both are preserved** — the provisioning tool never matches an admin profile (it is excluded from roster matching) and only ever adds a missing `txnSeq: 0` to any user document |
 | Pre-authorization | Unchanged and still the only way in: `allow create: if isAdmin() && newProfileOk(...)`. There is **no self-provisioning path** for a student, which is why an unauthorized sign-in sees only the "awaiting authorization" screen |
@@ -936,7 +981,7 @@ touching production.
   docs↔code mapping-drift check and a docs↔CLI check (every `provision.js`
   command and `--flag` an admin could copy out of the docs must exist in the
   parser, and `help` must list every accepted flag).
-* `firebase/test/rules.test.js` — **89 scenarios** at v3.0 (**111** after the held-account gate, §3.2a) in the production rules
+* `firebase/test/rules.test.js` — **89 scenarios** at v3.0 (**121** after the held-account gate and the pre-authorization gate, §3.2a) in the production rules
   engine, including 14 new ones that run the engine with synthetic identifiers
   (pre-authorization, unauthorized lockout, withdrawal/credit/reversal with
   synthetic ids, no-loosening checks).

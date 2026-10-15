@@ -47,7 +47,9 @@ recorded in runbook §8 step 3.
 
 The deploy also turns on the held-account gate (SECURITY_REVIEW §3.2a). Real-email accounts are
 denied all financial access unless the owner has created an authorization document for them, so
-that decision is part of the gated step.
+that decision is part of the gated step. The gate also requires every username account to be
+email-verified and every username profile to have `role: 'student'` (SECURITY_REVIEW §3.2a,
+runbook §8 step 7). Both are checked read-only before the deploy.
 
 The audited rules are deployed **only** at `docs/USERNAME_LOGIN.md` §8 step 7, after the
 admin profile is verified (step 5) and the `txnSeq` backfill is done (step 6). Before any
@@ -57,7 +59,7 @@ deploy, run the emulator suite and confirm it passes:
 cd firebase
 npm ci
 firebase emulators:exec --project jkss-fund-local --only firestore "node test/rules.test.js"
-# expect the last line: 111 passed, 0 failed
+# expect the last line: 121 passed, 0 failed
 ```
 
 Then, and only at that gate:
