@@ -1,18 +1,25 @@
 // src/screens/StudentDashboard.js
+// Student home: greeting, gradient balance hero, quick actions, recent activity.
 import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Modal, TextInput } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import { Screen, Card, Button, Subtitle } from '../components/ui';
+import {
+  Screen, FadeIn, GradientCard, Button, SectionHeader, TxnRow, EmptyState,
+  Sheet, Input, Chip,
+} from '../components/ui';
 import { api } from '../api';
-import { formatINR, formatDateTime, initials } from '../utils/format';
-import { palette } from '../theme';
+import { formatINR, timeGreeting, sameMonth } from '../utils/format';
+
+const QUICK_AMOUNTS = [100, 200, 500];
 
 export default function StudentDashboard({ navigation }) {
   const { user } = useAuth();
   const { theme } = useTheme();
-  const [info, setInfo] = useState({ balance: 0, committeeBalance: 0, full_name: user?.full_name || '' });
+  const [info, setInfo] = useState({ balance: 0, balancePaise: 0, committeeBalance: 0, full_name: user?.full_name || '' });
   const [txns, setTxns] = useState([]);
+  const [hidden, setHidden] = useState(false);
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [amount, setAmount] = useState('');
   const [desc, setDesc] = useState('');
@@ -26,106 +33,180 @@ export default function StudentDashboard({ navigation }) {
     return () => { u1(); u2(); };
   }, []);
 
+  const name = info.full_name || user?.full_name || 'Student';
+  const monthEarnings = txns
+    .filter((t) => t.type === 'earning' && sameMonth(t.createdAt))
+    .reduce((s, t) => s + Number(t.amount || 0), 0);
+
+  const balanceText = hidden ? '₹ ••••••' : formatINR(info.balance);
+
+  // Whole-paise max, derived from integer paise so float drift can't
+  // overstate the balance.
+  const maxRupees = Math.floor(Number(info.balancePaise ?? 0)) / 100;
+
   const withdraw = async () => {
-    setWError(''); setWLoading(true);
+    setWError('');
+    setWLoading(true);
     try {
       const amt = parseFloat(amount);
       if (!amt || amt <= 0) throw new Error('Enter a valid amount');
-      await api.withdraw(amt, desc || 'Withdrawal');
-      setShowWithdraw(false); setAmount(''); setDesc('');
-    } catch (e) { setWError(e.message); }
-    finally { setWLoading(false); }
+      if (Math.round(amt * 100) > Number(info.balancePaise ?? 0)) {
+        throw new Error('Amount is more than your balance');
+      }
+      await api.withdraw(amt, desc.trim() || 'Withdrawal');
+      setShowWithdraw(false);
+      setAmount('');
+      setDesc('');
+    } catch (e) {
+      setWError(e.message?.replace('Firebase: ', '') || 'Could not process withdrawal');
+    } finally {
+      setWLoading(false);
+    }
   };
 
   return (
     <Screen>
-      <View style={styles.header}>
-        <View>
-          <Subtitle>Welcome back,</Subtitle>
-          <Text style={[styles.name, { color: theme.text }]}>{info.full_name || user?.full_name || 'Student'}</Text>
+      <FadeIn navigation={navigation}>
+      <View style={styles.headerRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.greeting, { color: theme.textMuted }]}>{timeGreeting()},</Text>
+          <Text style={[styles.name, { color: theme.text }]} numberOfLines={1}>{name}</Text>
         </View>
-        <View style={[styles.avatar, { backgroundColor: palette.primary }]}>
-          <Text style={styles.avatarText}>{initials(info.full_name || user?.full_name)}</Text>
+        <View
+          style={[styles.avatar, { backgroundColor: theme.primarySoft }]}
+        >
+          <Ionicons name="person" size={20} color={theme.onPrimaryContainer} />
         </View>
       </View>
 
-      <Card style={[styles.balanceCard, { backgroundColor: palette.primary }]}>
-        <Text style={styles.balanceLabel}>Your Balance</Text>
-        <Text style={styles.balanceValue}>{formatINR(info.balance)}</Text>
-        <Text style={styles.committee}>Committee Fund: {formatINR(info.committeeBalance)}</Text>
-        <Button label="Withdraw" variant="accent" onPress={() => setShowWithdraw(true)} style={styles.withdrawBtn} />
-      </Card>
-
-      <View style={styles.sectionHead}>
-        <Text style={[styles.sectionTitle, { color: theme.text }]}>Recent Activity</Text>
-        <TouchableOpacity onPress={() => navigation.navigate('History')}>
-          <Text style={{ color: palette.info }}>See all</Text>
-        </TouchableOpacity>
-      </View>
-
-      <ScrollView style={{ flex: 1 }}>
-        {txns.length === 0 ? <Text style={[styles.empty, { color: theme.textMuted }]}>No transactions yet.</Text> : null}
-        {txns.map((t) => (
-          <Card key={t.id} style={styles.txn}>
-            <View style={styles.txnRow}>
-              <View style={[styles.txnIcon, { backgroundColor: t.type === 'earning' ? palette.success : palette.danger }]}>
-                <Text style={styles.txnIconText}>{t.type === 'earning' ? '+' : '-'}</Text>
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.txnDesc, { color: theme.text }]}>{t.description}</Text>
-                <Text style={[styles.txnDate, { color: theme.textMuted }]}>{formatDateTime(t.createdAt?.toDate ? t.createdAt.toDate() : t.createdAt)}</Text>
-              </View>
-              <Text style={[styles.txnAmt, { color: t.type === 'earning' ? palette.success : palette.danger }]}>
-                {t.type === 'earning' ? '+' : '-'}{formatINR(t.amount)}
-              </Text>
-            </View>
-          </Card>
-        ))}
-      </ScrollView>
-
-      <Modal visible={showWithdraw} transparent animationType="slide">
-        <View style={styles.modalBackdrop}>
-          <View style={[styles.modal, { backgroundColor: theme.surface }]}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>Withdraw Money</Text>
-            <Subtitle>Available: {formatINR(info.balance)}</Subtitle>
-            <TextInput placeholder="Amount (₹)" keyboardType="numeric" value={amount}
-              onChangeText={setAmount} placeholderTextColor={theme.textMuted}
-              style={[styles.modalInput, { color: theme.text, borderColor: theme.border, backgroundColor: theme.surfaceAlt }]} />
-            <TextInput placeholder="Reason (optional)" value={desc}
-              onChangeText={setDesc} placeholderTextColor={theme.textMuted}
-              style={[styles.modalInput, { color: theme.text, borderColor: theme.border, backgroundColor: theme.surfaceAlt }]} />
-            {wError ? <Text style={{ color: palette.danger, marginBottom: 8 }}>{wError}</Text> : null}
-            <Button label={wLoading ? 'Processing…' : 'Confirm Withdraw'} loading={wLoading} onPress={withdraw} variant="accent" />
-            <Button label="Cancel" variant="outline" onPress={() => setShowWithdraw(false)} />
+      <GradientCard style={styles.balanceCard}>
+        <View style={styles.balanceTop}>
+          <Text style={styles.balanceLabel}>Available balance</Text>
+          <Pressable onPress={() => setHidden((v) => !v)} hitSlop={10} style={styles.eyeBtn}>
+            <Ionicons name={hidden ? 'eye-off-outline' : 'eye-outline'} size={18} color="rgba(255,255,255,0.85)" />
+          </Pressable>
+        </View>
+        <Text style={styles.balanceValue}>{balanceText}</Text>
+        <View style={styles.chipRow}>
+          <View style={styles.glassChip}>
+            <Ionicons name="shield-checkmark-outline" size={13} color="rgba(255,255,255,0.9)" />
+            <Text style={styles.glassChipText}>
+              Committee {hidden ? '••••' : formatINR(info.committeeBalance)}
+            </Text>
+          </View>
+          <View style={styles.glassChip}>
+            <Ionicons name="trending-up" size={13} color="#FCD34D" />
+            <Text style={styles.glassChipText}>
+              This month {hidden ? '••••' : '+' + formatINR(monthEarnings)}
+            </Text>
           </View>
         </View>
-      </Modal>
+      </GradientCard>
+
+      <View style={styles.actionsRow}>
+        <Button label="Withdraw" icon="cash-outline" variant="accent" onPress={() => { setWError(''); setShowWithdraw(true); }} style={{ flex: 1 }} />
+        <Button label="History" icon="receipt-outline" variant="soft" onPress={() => navigation.navigate('History')} style={{ flex: 1, marginLeft: 10 }} />
+      </View>
+
+      <SectionHeader title="Recent activity" action="See all" onAction={() => navigation.navigate('History')} />
+
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom: 110 }}
+        showsVerticalScrollIndicator={false}
+      >
+        {txns.length === 0 ? (
+          <EmptyState
+            icon="wallet-outline"
+            title="No transactions yet"
+            subtitle="When your hostel admin adds a job, your share will appear here instantly."
+          />
+        ) : (
+          txns.slice(0, 6).map((t, i) => <TxnRow key={t.id} txn={t} last={i === Math.min(txns.length, 6) - 1} />)
+        )}
+      </ScrollView>
+      </FadeIn>
+
+      <Sheet visible={showWithdraw} onClose={() => setShowWithdraw(false)} title="Withdraw money">
+        <View style={[styles.withdrawAvail, { backgroundColor: theme.successSoft }]}>
+          <Ionicons name="wallet-outline" size={16} color={theme.success} />
+          <Text style={[styles.withdrawAvailText, { color: theme.success }]}>
+            Available: {formatINR(info.balance)}
+          </Text>
+        </View>
+
+        <Input
+          icon="cash-outline"
+          prefix="₹"
+          placeholder="Amount"
+          keyboardType="numeric"
+          value={amount}
+          onChangeText={(t) => { setAmount(t); setWError(''); }}
+          error={wError || undefined}
+        />
+
+        <View style={{ flexDirection: 'row', marginBottom: 14 }}>
+          {QUICK_AMOUNTS.map((q) => (
+            <Chip
+              key={q}
+              label={'₹' + q}
+              active={amount === String(q)}
+              onPress={() => setAmount(String(q))}
+            />
+          ))}
+          <Chip
+            label="Max"
+            active={amount === String(maxRupees)}
+            onPress={() => setAmount(String(maxRupees))}
+          />
+        </View>
+
+        <Input
+          icon="note-outline"
+          placeholder="Reason (optional)"
+          value={desc}
+          onChangeText={setDesc}
+          style={{ marginBottom: 6 }}
+        />
+
+        <Button
+          label={wLoading ? 'Processing…' : 'Confirm withdrawal'}
+          loading={wLoading}
+          onPress={withdraw}
+          variant="accent"
+          size="lg"
+          icon="arrow-down-circle-outline"
+          style={{ marginTop: 6 }}
+        />
+      </Sheet>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  name: { fontSize: 20, fontWeight: '700' },
-  avatar: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center' },
-  avatarText: { color: '#fff', fontWeight: '800' },
-  balanceCard: { padding: 22, borderRadius: 20, marginBottom: 18 },
-  balanceLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 14 },
-  balanceValue: { color: '#fff', fontSize: 36, fontWeight: '800', marginVertical: 4 },
-  committee: { color: 'rgba(255,255,255,0.85)', fontSize: 13, marginBottom: 14 },
-  withdrawBtn: { alignSelf: 'flex-start', paddingHorizontal: 28 },
-  sectionHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  sectionTitle: { fontSize: 17, fontWeight: '700' },
-  txn: { padding: 12 },
-  txnRow: { flexDirection: 'row', alignItems: 'center' },
-  txnIcon: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  txnIconText: { color: '#fff', fontWeight: '800', fontSize: 18 },
-  txnDesc: { fontSize: 14, fontWeight: '600' },
-  txnDate: { fontSize: 12, marginTop: 2 },
-  txnAmt: { fontSize: 15, fontWeight: '800' },
-  empty: { textAlign: 'center', marginTop: 24 },
-  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modal: { borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20 },
-  modalTitle: { fontSize: 20, fontWeight: '800', marginBottom: 4 },
-  modalInput: { borderWidth: 1, borderRadius: 12, padding: 12, marginTop: 12, fontSize: 16 },
+  headerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
+  greeting: { fontSize: 13, fontWeight: '600' },
+  name: { fontSize: 22, fontWeight: '800', letterSpacing: -0.4, marginTop: 1 },
+  avatar: {
+    width: 46, height: 46, borderRadius: 16,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  balanceCard: { padding: 22, marginBottom: 16 },
+  balanceTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  balanceLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 13.5, fontWeight: '600', letterSpacing: 0.3 },
+  eyeBtn: { padding: 4 },
+  balanceValue: { color: '#fff', fontSize: 40, fontWeight: '800', letterSpacing: -1, marginVertical: 6 },
+  chipRow: { flexDirection: 'row', marginTop: 6 },
+  glassChip: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7, marginRight: 8,
+  },
+  glassChipText: { color: '#fff', fontSize: 12, fontWeight: '700', marginLeft: 6 },
+  actionsRow: { flexDirection: 'row', marginBottom: 4 },
+  withdrawAvail: {
+    flexDirection: 'row', alignItems: 'center',
+    borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 16,
+  },
+  withdrawAvailText: { fontSize: 13.5, fontWeight: '800', marginLeft: 8 },
 });
