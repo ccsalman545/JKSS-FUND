@@ -25,7 +25,7 @@ const ADMIN = 'admin@jkss.in';
   const admin = env.authenticatedContext('uid-admin', { email: ADMIN }).firestore();
   let pass = 0;
   let fail = 0;
-  for (const k of ['d1', 'd2', 'd3', 'd4', 'd5']) {
+  for (const k of ['e1','e2','e3','e4','e5','e6','e7','e8','e9','e10']) {
     try {
       await assertSucceeds(getDoc(doc(admin, 'diag/' + k)));
       pass++;

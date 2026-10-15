@@ -1,38 +1,13 @@
 rules_version = '2';
 
-// DIAGNOSTIC RUN — which get() path-expression pattern resolves?
-// Each diag/{k} read succeeds iff pattern k evaluates true for an
-// authenticated admin with the seeded users/admin@jkss.in doc.
+// DIAGNOSTIC ROUND 2 — what does get() actually return in this engine?
+// Seeded: meta/committee = {balancePaise: 1000, balance: 10}.
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
     function signedIn() {
       return request.auth != null;
-    }
-
-    // D1: wildcard passed as a function PARAMETER + email parameter
-    function d1(db, email) {
-      let d = get(/databases/$(db)/documents/users/$(email));
-      return d.exists && d.data.role == 'admin';
-    }
-
-    // D2: wildcard via function SCOPE + inline auth expression
-    function d2() {
-      let d = get(/databases/$(database)/documents/users/$(request.auth.token.email));
-      return d.exists && d.data.role == 'admin';
-    }
-
-    // D4: wildcard as a parameter only (single capture)
-    function d4(db) {
-      let d = get(/databases/$(db)/documents/meta/committee);
-      return d.exists && d.data.balancePaise is int;
-    }
-
-    // D5: CURRENT (failing) pattern — wildcard via scope, email parameter
-    function d5(email) {
-      let d = get(/databases/$(database)/documents/users/$(email));
-      return d.exists && d.data.role == 'admin';
     }
 
     match /users/{email} {
@@ -44,14 +19,18 @@ service cloud.firestore {
     }
 
     match /diag/{k} {
-      // D3 is the official-docs pattern, inlined in the rule itself.
       allow get: if signedIn()
         && (
-          (k == 'd1' && d1(database, 'admin@jkss.in'))
-          || (k == 'd2' && d2())
-          || (k == 'd3' && get(/databases/$(database)/documents/users/$(request.auth.token.email)).exists)
-          || (k == 'd4' && d4(database))
-          || (k == 'd5' && d5('admin@jkss.in'))
+          (k == 'e1' && (get(/databases/$(database)/documents/meta/committee) is map))
+          || (k == 'e2' && (get(/databases/$(database)/documents/meta/committee) is int))
+          || (k == 'e3' && (get(/databases/$(database)/documents/meta/committee) is string))
+          || (k == 'e4' && (get(/databases/$(database)/documents/meta/committee) is bool))
+          || (k == 'e5' && (get(/databases/$(database)/documents/meta/committee) is null))
+          || (k == 'e6' && (get(/databases/$(database)/documents/meta/committee) != null))
+          || (k == 'e7' && (get(/databases/$(database)/documents/meta/committee).data.balancePaise is int))
+          || (k == 'e8' && (get(/databases/$(database)/documents/meta/committee).balancePaise is int))
+          || (k == 'e9' && exists(/databases/$(database)/documents/meta/committee))
+          || (k == 'e10' && (get(/databases/$(database)/documents/meta/committee).data is map))
         );
     }
 
