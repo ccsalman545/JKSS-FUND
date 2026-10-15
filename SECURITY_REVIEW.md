@@ -1,4 +1,4 @@
-# JKSS-FUND v3.2 — Security & Financial Accounting Review
+# JKSS-FUND v3.5.2 — Security & Financial Accounting Review
 
 Scope: Firebase Auth + Firestore on the **Spark (free) plan**, Android app
 (`com.jkssfund.app`, Expo SDK 51 + React Native Firebase). This document is the
@@ -7,9 +7,33 @@ results, and the exact steps to run tests and deploy — plus an honest
 assessment of what is and is *not* safe for real money.
 
 **Status:** implementation + executable tests complete on branch
-`arena/dc657e31-jkss-fund`. The rules suite is **executed in GitHub Actions CI**
-(Firestore emulator, production rules engine) — see §4. Rules deployment and
-any production data change are **not** done (per the task constraints).
+`arena/dc657e31-jkss-fund` (tip `3cbe1da`). The rules suite is
+**executed in GitHub Actions CI** (Firestore emulator, production rules
+engine) — see §4. Latest run **38704744622: SUCCESS — 75/75 rules scenarios
+passed, 0 failure annotations**; Node suites green in the same run. Rules
+deployment and any production data change are **not** done (per the task
+constraints) — the manual deploy commands are in §5, to run only after
+explicit approval.
+
+> **v3.5.2 (this revision) — three rounds of emulator-discovered engine
+> behavior, each fixed and re-verified in CI.**
+> 1. **v3.4→v3.5** — the engine has no `.exists` property on `get()`/
+>    `getAfter()` results (only `.data`) and no `toString()`; the rules were
+>    rewritten on the CI-verified primitives `exists(path)` (clean bool) +
+>    `get(path).data.field` (always guarded by `exists`/type checks) —
+>    run 38703715491: 71/75 (all admin + read scenarios green; the 4
+>    failures were the withdrawal batches dying on the missing `toString`).
+> 2. **v3.5→v3.5.2** — the withdrawal canonical id `w_{email}_{seq}` could
+>    not be reconstructed in rules at all (no int→string). Replaced with a
+>    **bidirectional companion lock** (the user write carries
+>    `withdrawalTxnId`, the txn carries `seq`; each side verifies the other)
+>    — run 38704744622: **75/75**.
+> 3. **Admin pre-authorization (v3.5)** — students can no longer
+>    self-create profiles at all; only an existing admin (app or console)
+>    can provision one, in the exact `newProfileOk` shape (student role,
+>    zero balances, `txnSeq: 0`, field allowlist). The app's `ensureProfile`
+>    is now **read-only** and blocks the dashboard until an admin has
+>    pre-authorized the student.
 
 > **v3.2 (this revision) — why the rules changed a second time.** After the
 > first emulator run, the production rules compiler rejected the v3.1 ruleset:
@@ -36,13 +60,13 @@ on the financial data. Every one of these is closed by the new ruleset
 | # | Vulnerability (old rules) | Impact | Fix (new rules) |
 |---|---------------------------|--------|-----------------|
 | V1 | Any signed-in user could **read/list all profiles** | All balances, names, emails exposed to every student | `get` = self or admin; `list` = admin only |
-| V2 | Any signed-in user could **create a profile with `role: "admin"`** | Anyone becomes admin → full control of the fund | Self-create is **always** `role: "student"`, zero balances, and **only the 7 known fields** (a field allowlist via `keys().hasOnly(...)`); only an existing admin can create an `admin`-role doc, and only **at create** |
+| V2 | Any signed-in user could **create a profile with `role: "admin"`** (or any profile at all) | Anyone becomes admin → full control of the fund | **Self-create is now impossible** (`create: if false` for non-admins). Only an existing admin can create a profile: student or admin role, **zero balances required**, field allowlist via `keys().hasOnly(...)`. Pre-authorized profiles are created **only by an admin** (via the app or the Firebase console) in the exact `newProfileOk` shape — student role, zero balances, `txnSeq: 0`, field allowlist; students have **no self-create or self-activation path**. A Google sign-in with no matching doc simply has no profile — the app gates the dashboard on it (see §3.2 + the admin migration plan in §10) |
 | V3 | Any signed-in user could **modify any profile field of any user** — including `role`, `balance`, `balancePaise` | Direct balance inflation, self-admin-ification | Self-update restricted to `full_name`/`avatar`/`lastActiveAt` (or a pure withdrawal pair); admin update restricted to `full_name`/`avatar`/`lastActiveAt`/`removedAt` (or a verified job batch) — **no path exists that edits role or balance manually** |
 | V4 | Any signed-in user could **delete any profile** (hard delete) | Erase debt/audit trail; re-create as admin | `allow delete: if false` on `users`; removal is a tombstone (`removedAt`) only, by admins |
 | V5 | Any signed-in user could **create/modify/delete jobs** | Pay themselves, rewrite the 10/90 split | Jobs: all operations **admin-only**; create shape-validated; update = `status` toggle or reversal tombstone only; **delete denied entirely** (audit history must survive) |
 | V6 | Any signed-in user could **write any field of `meta/committee`** | Inflate/deflate the committee fund | Committee: read for signed-in; create-at-zero for signed-in (zero only, exact fields); **update only by an admin, only inside a job batch** (the batch must contain the job write at the exact key the committee doc references); final balance verified via `getAfter()` by the `/jobs` rules; delete denied |
 | V7 | Job creation had **no shape validation** | Record a 50/50 split, a 110% split, arbitrary amounts | `jobShapeOk()` enforces: `committeeSharePaise == floor(amountPaise/10)`, `studentSharePaise == amountPaise − committeeSharePaise`, `studentCount` consistency, `allocations` is a **map** of exactly `studentCount` entries, and **every value is `base` or `base+1`** (the largest-remainder bound, re-derived in rules) |
-| V8 | Balance changes had **no atomicity requirement** | Money created out of thin air, un-auditable ledger | Every balance change is legal only inside a verified atomic batch: **withdrawal** = exactly 2 writes (user update + one companion withdrawal txn under `users/{me}/transactions/`), final `balancePaise` integer ≥ 0, txn amount == the exact delta computed against the **live** document; **job credit** = job set + per-student credit + canonical `earn_{jobId}_{email}` txn + committee update carrying `lastJobId`; **job reversal** = job **tombstone** update + original-allocation debits + canonical `rev_{jobId}_{email}` txns + committee credit-back carrying `reversedJobId` |
+| V8 | Balance changes had **no atomicity requirement** | Money created out of thin air, un-auditable ledger | Every balance change is legal only inside a verified atomic batch: **withdrawal** = exactly 2 writes (user update + one companion withdrawal txn under `users/{me}/transactions/`), final `balancePaise` integer ≥ 0, txn amount == the exact delta computed against the **live** document, and the pair is a **bidirectional lock** (user write names the txn via `withdrawalTxnId`; the txn carries `seq`; each side cross-verifies the other's post-state — a third write, an extra txn, a stale replay, or a detached balance write is all denied); **job credit** = job set + per-student credit + canonical `earn_{jobId}_{email}` txn + committee update carrying `lastJobId`; **job reversal** = job **tombstone** update + original-allocation debits + canonical `rev_{jobId}_{email}` txns + committee credit-back carrying `reversedJobId` (reversal of an already-reversed job denied via `getAfter(jobs/{id}).data.status`) |
 | V9 | Top-level `transactions` collection was **writable** | Ledger tampering | Ledger lives at `users/{email}/transactions` (self or admin read; the three verified creations only; update/delete denied for everyone); legacy top-level collection is **admin-read-only**, all writes denied |
 | V10 | No user-document ID validation; email casing not normalized | Split-brain profiles; ID injection | `isEmailId()` (non-empty, lowercase, exactly one `@`, no spaces, ≤200 chars) required on every `users/{email}` access; the app normalizes to lowercase on all writes |
 | V11 | Permissive fall-through for unknown paths | Undefined surface area | Every path has explicit rules; final `match /{document=**} { allow read, write: if false; }` |
@@ -77,14 +101,16 @@ correctness bugs that the new rules would have punished:
 | `firebase/.firebaserc` | Default project fixed to the real project `jkss-fund` (was the invalid uppercase placeholder `YOUR_FIREBASE_PROJECT_ID`, which made `firebase emulators:exec` refuse to start — project IDs must be lowercase) |
 | `firebase/firestore.indexes.json` | Emptied — all app queries are single-field (built-in indexes) |
 | `firebase/firebase.json` | Reviewed — unchanged (rules/indexes paths + emulator ports are correct) |
-| `firebase/test/rules.test.js` | **New (v3.2 shapes)** — 46-scenario emulator rules test suite (authorized + unauthorized, all required scenarios, plus the new protocol's invariants) |
+| `firebase/test/rules.test.js` | **Rewritten to the v3.5 protocol — 75 scenarios** (all admin scenarios, student authz, pre-authorization flow incl. unauthorized self-create denial + no-field-grabbing on activation, protected fields, private txns, withdrawals incl. overdraw/stale-replay/extra-write/amount-mismatch/detached-write, job creation, committee changes, job reversal incl. double-reversal + legacy + removed-student negative liability, unauthorized paths) |
 | `firebase/package.json` (+ lockfile) | **New** — dev deps for the rules suite: `firebase@^10.14.1` (peer of `@firebase/rules-unit-testing@^3.0.4`), lockfile `npm ci`-verified |
 | `firebase/README.md` | Updated — v3.2 data model + batch protocol, local testing workflow, deployment notes, `.firebaserc`/project selection |
 | `.github/workflows/firestore-rules.yml` | **New** — CI: rules suite in the Firestore emulator (Java 21, emulator-jar cache, project `jkss-fund-local`, full output published as a job annotation) + Node suites for the mobile tests |
 | `mobile/src/accounting.js` | **New** — pure paise math; `allocateLargestRemainder` returns the on-disk **map** `{email: paise}`; `assertAllocationsExact` validates the map |
-| `mobile/src/api.js` | **Rewritten data layer** — paise-exact; per-user ledger subcollections; job credit/reversal/withdrawal as atomic transactions with **explicit final balances**; canonical txn IDs (`earn_{jobId}_{email}` / `rev_{jobId}_{email}`); committee update carries `lastJobId`/`reversedJobId`; reversal = job **tombstone** (never delete); original-allocation reversals; legacy-job guard; tombstone removal; idempotency keys; fixed `ensureCommittee` (A7) |
+| `mobile/src/api.js` | **Rewritten data layer** — paise-exact; per-user ledger subcollections; job credit/reversal/withdrawal as atomic transactions with **explicit final balances**; canonical txn IDs (`earn_{jobId}_{email}` / `rev_{jobId}_{email}`); withdrawal = **bidirectional lock** (user write carries `withdrawalTxnId`, txn doc carries `seq`); committee update carries `lastJobId`/`reversedJobId`; reversal = job **tombstone** (never delete); original-allocation reversals; legacy-job guard; tombstone removal; idempotency keys; fixed `ensureCommittee` (A7); **`ensureProfile` is now read-only** (no auto-create; returns the profile or `null` for unauthorized students) |
 | `mobile/test/accounting.test.js` | **New** — 31 executed unit tests of the financial core (incl. 100k fuzz invariants + 1,000-job no-drift fuzz) |
-| `mobile/test/api.mock.test.js` | **New** — 21 executed integration tests of the real `api.js` orchestration against a transaction-semantic in-memory Firestore (incl. atomicity-on-failure, idempotent retry, original-allocation reversal after roster change, tombstone re-reversal refusal) |
+| `mobile/test/api.mock.test.js` | **22 executed integration tests** of the real `api.js` orchestration against a transaction-semantic in-memory Firestore (incl. atomicity-on-failure, idempotent retry, original-allocation reversal after roster change, tombstone re-reversal refusal, **pre-authorization: unauthorized student gets `null` (no auto-create), authorized `txnSeq:0` doc activates, profile field is never mutated by ensureProfile**) |
+| `mobile/App.js` / `mobile/src/context/AuthContext.js` | **Pre-authorization gate** — after auth, the app resolves the profile; `status: 'authorized' | 'unauthorized'` in context; unauthorized students see a read-only "awaiting admin authorization" screen (no auto-create, no dashboard); unauthorized state re-checked on app resume |
+| `mobile/src/screens/StudentsScreen.js` | Admin "add student" = **provisioning** (creates the pre-authorized doc); copy updated; add-student requires a valid email |
 | `mobile/src/screens/JobsScreen.js` | Reversed jobs shown with a "reversed" badge and excluded from totals; reversal confirm text updated (tombstone, audit record) |
 | `mobile/src/screens/StudentsScreen.js` | Removal is a tombstone (copy + confirmation updated); add-student requires a valid email |
 | `mobile/src/screens/StudentDashboard.js` | Max-withdrawal chip and over-balance check derived from integer paise; withdrawal result handling |
@@ -116,9 +142,9 @@ compiler:
 
 Consequences for the design:
 
-- Cross-write checks use **exact paths only**: `request.writes.get('jobs/' +
-  jobId, null)` style, where the path comes from a **wildcard capture** or a
-  **field of a write at a known exact key** (never from iterating unknown keys).
+- Cross-write checks use **exact paths only**: wildcard captures or a
+  **field of a write at a known exact key** (never from iterating unknown
+  keys).
 - **`map[key]` on a missing key is an error** (verified in the compiler), so
   all optional lookups use `.get(key, null)` or an `x is not T` guard first.
 - The batch's job reference travels in the **committee write**: the committee
@@ -129,47 +155,83 @@ Consequences for the design:
 - Job `allocations` is a **map keyed by email** (`{email: amountPaise}`), so
   "this student's allocation" is `allocations.get(email)` — no list scanning.
 
+### 3.0a Engine-verified runtime semantics (CI probes, v1.22.0 — v3.5)
+
+Beyond the grammar, the emulator/production engine behaves as follows
+(each fact was established by a dedicated probe run and then encoded):
+
+| Probe | Result |
+|-------|--------|
+| `get(path)` / `getAfter(path)` return shape | a **map with one member: `.data`** (the doc field map, or `null` if absent). There is **no `.exists` member** — `x.exists` throws "Property exists is undefined on object" |
+| Direct field access on the wrapper (e.g. `get(p).field`) | **error** — always go through `.data` |
+| `exists(path)` | **clean boolean**, no side effects — the only correct "doc present" test |
+| `get(p) is map` / `get(p) != null` on a **missing** path | `true` (the wrapper exists) — **never** use as an existence test |
+| `is int/string/bool` or `== null` applied directly to a get() result | **evaluation error** even when the honest answer is false — guard with `exists()` or read `.data` fields only |
+| `toString()` / any int→string conversion | **does not exist** ("Function not found error: Name: [toString]") — canonical ids must be string-only, or supplied by the client as a string field (v3.5.2 bidirectional lock) |
+| `request.writes` | **does not exist** — batch visibility only via `get()`/`getAfter()` at exact paths |
+| `if` statements, lambdas | not in the language (see §3.0) |
+
+Encoded patterns (all 75 CI scenarios pass on these): `let cOld =
+exists(p) ? get(p).data : null;`, `let cAfter = getAfter(p).data;`
+(always `&&`-gated by `exists`-style conditions so an absent doc can never
+reach a bare `.data` read), and boolean presence via `exists(p) == true`.
+
 ### 3.1 Helpers
 
 `signedIn()`, `isEmailId(id)`, `isSelf(email)` (parameterized), `isAdmin()`
 (user doc exists **and** `role == 'admin'`), `paiseOf(d)` (`balancePaise` or
 legacy `math.round(balance*100)`), `balanceFieldsOnly()` (affected keys ⊆
-`{balance, balancePaise}` and include `balancePaise`).
+`{balance, balancePaise}` and include `balancePaise`),
+`newProfileOk(d)` (create/activation shape: field allowlist, student role,
+zero balances, `email` == doc ID, `txnSeq` absent or exactly 0 — used both
+for admin create and for the pre-authorization **activation** update), plus
+per-batch helpers implementing the protocol in §3.2.
 
 ### 3.2 Path-by-path
 
 - **`/users/{email}`**
   - `get`: self or admin · `list`: admin only
-  - `create`: self → always `role: 'student'`, `balancePaise == 0`,
-    `balance == 0`, `email` field == doc ID, **fields ⊆ the 7 known fields**;
-    admin → student or admin role, zero balances, same field allowlist
-  - `update` (OR of four exclusive branches):
+  - `create`: **admin only** (`isAdmin() && newProfileOk(...)`): student or
+    admin role, `balancePaise == 0`, `balance == 0`, `email` field == doc
+    ID, `txnSeq == 0`, **fields ⊆ the 8 known fields**. Students cannot
+    create their own profile — a sign-in with no pre-authorized doc has no
+    profile and the app shows the "awaiting admin authorization" state.
+  - `update` (OR of exclusive branches):
     1. self profile: affected keys ⊆ `{full_name, avatar, lastActiveAt}`
-    2. self **withdrawal**: balance-fields-only, final `balancePaise` integer
-       ≥ 0, delta > 0 against the **live** doc, and the batch is **exactly
-       2 writes**: this user update + one `set` under
-       `users/{me}/transactions/{any}` with `type: 'withdrawal'`,
-       `amountPaise == delta` (a stale replayed batch has delta 0 → denied)
+    2. self **withdrawal** (bidirectional lock, v3.5.2): affected keys ⊆
+       `{balance, balancePaise, txnSeq, withdrawalTxnId}`; final
+       `balancePaise` int ≥ 0; delta > 0 against the **live** doc;
+       `txnSeq` advanced by exactly 1; `withdrawalTxnId` is a string; the
+       txn at that id is **absent before** the batch (`exists(...) ==
+       false`) and **present after** (`getAfter`), with `type ==
+       'withdrawal'` and `seq == newSeq`. The companion txn write (see
+       below) verifies the user side of the lock in return.
     3. admin maintenance: affected keys ⊆ `{full_name, avatar, lastActiveAt,
        removedAt}`
-    4. admin **job credit**: balance-fields-only, delta > 0, committee update
-       in the batch with `lastJobId == jobId`, job **set** at
-       `jobs/{jobId}`, `allocations.get(email) == delta`, canonical
-       `earn_{jobId}_{email}` txn in the batch at the same amount
-    5. admin **job reversal**: balance-fields-only, delta > 0, committee
-       update with `reversedJobId == jobId`, job **tombstone update** in the
-       batch, **original** `allocations.get(email) == delta` (via
-       `get()`, pre-batch), canonical `rev_{jobId}_{email}` txn; negative
-       final allowed only if `removedAt != null`
+    4. admin **job credit**: user write carries `creditJobId`; job **set**
+       at `jobs/{jobId}` must be NEW in the batch
+       (`exists == false` / `getAfter` present); `allocations.get(email) ==
+       delta`; canonical `earn_{jobId}_{email}` txn is NEW in the batch at
+       the same amount (committee delta enforced on the `/jobs` +
+       `/meta/committee` rules via `getAfter`)
+    5. admin **job reversal**: user write carries `reversalJobId`; the
+       **pre-batch** job (`get()`) must have `status == 'active'` and the
+       **post-batch** job (`getAfter`) `status == 'reversed'` (double
+       reversal denied); debit == **original** stored allocation; canonical
+       `rev_{jobId}_{email}` txn NEW in the batch at the same amount;
+       negative final allowed only if `removedAt != null`
   - `delete`: **denied for everyone** (tombstone-only removal)
 - **`/users/{email}/transactions/{txnId}`** — get/list: self or admin.
-  `create`: (a) self withdrawal — exactly the 2-write batch, live delta ==
-  amount; (b) admin earning — canonical id `earn_{jobId}_{email}`, job set in
-  batch, stored allocation == amount, user write in batch credits exactly
-  that amount vs the live doc; (c) admin reversal — canonical id
-  `rev_{jobId}_{email}`, job tombstone in batch, **original** stored
-  allocation == amount, user write debits exactly that amount.
-  `update`/`delete`: **denied for everyone** (immutable ledger).
+  `create`: (a) self withdrawal — the user write in the same batch must
+  reference **this exact txn id** (`uAfter.data.withdrawalTxnId == txnId`),
+  carry `txnSeq == t.seq`, and land at `finalPaise == prePaise − amountPaise`
+  (the second half of the bidirectional lock — a balance write without its
+  ledger entry, an extra companion, or a detached id is all denied);
+  (b) admin earning — canonical id `earn_{jobId}_{email}`, job set in batch,
+  stored allocation == amount, user write credits exactly that amount;
+  (c) admin reversal — canonical id `rev_{jobId}_{email}`, job tombstone in
+  batch, **original** stored allocation == amount, user write debits exactly
+  that amount. `update`/`delete`: **denied for everyone** (immutable ledger).
 - **`/jobs/{jobId}`** — admin-only on all operations:
   - `create`: `jobShapeOk` (name/date/amount validation,
     `committeeSharePaise == floor(amountPaise/10)`,
@@ -209,7 +271,14 @@ legacy `math.round(balance*100)`), `balanceFieldsOnly()` (affected keys ⊆
 - **Committee doc** gains `lastJobId` / `reversedJobId` (written only inside
   job batches; audit of the last financial operation).
 - **Canonical txn IDs**: earning = `earn_{jobId}_{email}`, reversal =
-  `rev_{jobId}_{email}`, withdrawal = caller-chosen (idempotency key).
+  `rev_{jobId}_{email}` (rule-reconstructed, string-only). Withdrawal =
+  `w_{email}_{txnSeq}`, **client-deterministic** and verified
+  bidirectionally: the user write carries `withdrawalTxnId` (string), the
+  txn doc carries `seq` (int) — required because this rules engine has no
+  int→string conversion (v3.5.2; see §3.0a).
+- **User docs** carry `txnSeq` (withdrawal counter, always 0 at
+  provisioning) and, after a withdrawal, `withdrawalTxnId` (last companion
+  id — audit trail).
 - Students: `removedAt` tombstone replaces hard deletion.
 - No new indexes required (all queries single-field).
 
@@ -265,13 +334,13 @@ empty-roster edges, determinism, and **100,000 randomized invariants**
 (allocations always sum exactly to the pool; `base+1` count always equals the
 remainder) plus a **1,000-job no-drift fuzz** (total liability == total pool).
 
-**`mobile/test/api.mock.test.js` — 21/21 PASSED**
+**`mobile/test/api.mock.test.js` — 22/22 PASSED**
 (the *real* `mobile/src/api.js` — loaded and executed — against an
 in-memory Firestore with true transaction semantics, including commit-time
 failure/rollback):
 ```
 cd mobile && node test/api.mock.test.js
-  → 21 passed, 0 failed
+  → 22 passed, 0 failed
 ```
 Covers: ₹1000 and ₹999.99 job splits exact to the paisa (map allocations
 sum-exact); tiny pools (₹1.00 → 30/30/30; ₹10.05 over 4 → 227/226/226/226);
@@ -291,19 +360,25 @@ NO partial state**; `ensureProfile`/`ensureCommittee` semantics.
 
 ### 4.2 Executed in CI — the production rules engine
 
-**`firebase/test/rules.test.js` — 46 scenarios, official
+**`firebase/test/rules.test.js` — 75 scenarios, official
 `@firebase/rules-unit-testing` against the real Firestore emulator
-(cloud-firestore-emulator, production rules engine).** This sandbox has no
-Java runtime, so the suite is executed in **GitHub Actions**
+(cloud-firestore-emulator, production rules engine v1.22.0).** This sandbox
+has no Java runtime, so the suite is executed in **GitHub Actions**
 (`.github/workflows/firestore-rules.yml`, triggered on every push to this
 branch): the job installs Java 21 + firebase-tools, starts a throwaway
 emulator with project `jkss-fund-local` (never the production project),
 loads `firebase/firestore.rules`, and runs the suite; the full output is
 published on the job.
 
+**Latest result (commit `3cbe1da`, run `38704744622`):** **75 passed,
+0 failed** — job conclusion `success`, 0 failure annotations. The run
+before it (`d1071b7`, `38703715491`) was 71 passed / 4 failed, all four
+legitimate-withdrawal batches dying on `Function not found error:
+Name: [toString]` — which is what motivated the v3.5.2 bidirectional lock.
+
 **How to read the results:** check the branch's Actions runs — the
 "Rules unit tests (emulator)" job is green when the last line is
-`46 passed, 0 failed`. The job also emits a `rules-output` annotation with
+`75 passed, 0 failed`. The job also emits a `rules-output` annotation with
 the full captured output on any failure.
 
 ```bash
@@ -313,21 +388,20 @@ npm ci
 firebase emulators:exec --project jkss-fund-local --only firestore "node test/rules.test.js"
 ```
 
-Scenario coverage (the 10+ required by the task, plus the v3.2 protocol
-invariants):
-1. Student cannot create an admin profile (self- or extra-fields) ✔
-2. Student cannot modify own role/balance (with or without companion txn) ✔
-3. Student cannot read another student's profile or ledger ✔
-4. Unauthenticated: no reads, no profile/job creation, no legacy ledger, no unknown paths ✔
-5. Student cannot create jobs, change committee, or write unknown paths ✔
-6. Withdrawal without matching balance reduction denied; mismatched delta denied; negative final denied; **stale replay (double spend) denied**; extra-write batch denied; bundled profile/role edits denied ✔
-7. Sequential withdrawals cannot overdraw ✔ (plus live-delta rejection of stale batches)
-8. Job reversal replays **original** allocations after roster changes; recalculated/wrong amounts denied; missing txn/committee/tombstone denied; **double-reversal denied**; legacy job denied; job **deletion always denied** ✔
-9. Rounding creates/loses no money (committee floor; base/base+1 bound; skewed-but-summing allocations denied; legacy list-format allocations denied) ✔
-10. Failed/partial ops leave no inconsistent state (every incomplete batch denied atomically) ✔
-11. Admin legitimate ops succeed (provision students/admins, rename/tombstone, valid job credit, status update, valid reversal, removed-student negative liability) ✔
-12. Committee references: dangling/missing/wrong `lastJobId`/`reversedJobId` all denied ✔
-13. Canonical txn IDs enforced (`earn_{jobId}_{email}`, `rev_{jobId}_{email}`) ✔
+Scenario coverage (the 10+ required by the task, plus the v3.5 protocol
+invariants) — **75 scenarios, all passing in the latest CI run**:
+1. **Pre-authorization**: student self-create denied (plain, admin-role, non-zero balance, someone-else's email, extra fields); role/balance self-modification denied ✔
+2. Read isolation: no cross-student profile/ledger reads; unauthenticated: no reads, no profile/job creation, no legacy ledger, no unknown paths ✔
+3. Student cannot create jobs, change committee, or write unknown paths ✔
+4. **Withdrawal protocol**: legitimate atomic pair allowed; WITHOUT companion txn denied; amount/delta mismatch denied; negative final denied; **stale replay (double spend) denied**; extra companion txn denied; **detached balance write (no named txn) denied**; **txn-only write (no user write) denied**; bundled profile/role edits denied ✔
+5. Sequential withdrawals cannot overdraw (the second one is denied live) ✔
+6. Job reversal replays **original** allocations after roster changes; recalculated/wrong amounts denied; missing txn/committee/tombstone denied; **double-reversal denied** (getAfter status check); legacy job denied; job **deletion always denied** ✔
+7. Job creation: valid 10/90 split allowed; wrong split, wrong allocation count, non-base+1 values, list-format allocations denied ✔
+8. Rounding creates/loses no money (committee floor; base/base+1 bound; skewed-but-summing allocations denied) ✔
+9. Failed/partial ops leave no inconsistent state (every incomplete batch denied atomically) ✔
+10. Admin legitimate ops succeed (provision students/admins at zero, rename/tombstone, valid job credit batch, status update, valid reversal, removed-student negative liability) ✔
+11. Committee references: dangling/missing/wrong `lastJobId`/`reversedJobId` all denied ✔
+12. Canonical txn IDs enforced (`earn_{jobId}_{email}`, `rev_{jobId}_{email}`, `w_{email}_{seq}` + the bidirectional lock) ✔
 
 ---
 
@@ -371,11 +445,12 @@ firebase deploy --only firestore --project jkss-fund
 2. **Firestore** (production mode — no changes needed for Spark; quotas are ample for a small fund)
    - [ ] `users` collection: create the first admin document (ID = lowercase admin email; `email`, `role: "admin"`, `full_name`, `avatar: ""`, `balancePaise: 0`, `balance: 0`). This must exist **before** the rules deploy (the bootstrap chicken-and-egg: only an admin can create admins, and no update path can grant the role).
    - [ ] Do **not** pre-create `meta/committee` — the app bootstraps it at zero.
-   - [ ] Legacy data (if any): leave the old top-level `transactions` collection in place (admin-read-only). Old `users/{id}` docs with non-email IDs or float-only balances: migrate to lowercase-email IDs **before** deploying (the new rules reject non-email IDs) and add `balancePaise = round(balance*100)`. Old `jobs` without map `allocations`: leave them — the app refuses auto-reversal and flags them for manual reconciliation; note that v3.2 jobs use the **map** format, so mixed v3.1 list-format jobs cannot be reversed automatically either.
+   - [ ] Legacy data (if any): leave the old top-level `transactions` collection in place (admin-read-only). Old `users/{id}` docs with non-email IDs or float-only balances: migrate to lowercase-email IDs **before** deploying (the new rules reject non-email IDs) and add `balancePaise = round(balance*100)`. **Also add `txnSeq: 0` to every existing user doc** (v3.5.2: the withdrawal counter is required on every user write — a doc without it cannot be the subject of a verified withdrawal/credit/reversal batch until it has `txnSeq: 0`). Old `jobs` without map `allocations`: leave them — the app refuses auto-reversal and flags them for manual reconciliation; note that v3.2 jobs use the **map** format, so mixed v3.1 list-format jobs cannot be reversed automatically either.
+   - [ ] **Admin profile**: the existing production admin doc uses ID `thrikkakarajkss` but its `email` field is `thrikkakarajkss@gmail.com`. The v3.5 rules resolve admin via the **doc ID == auth email**, so a sign-in as the existing account looks up `users/thrikkakarajkss@gmail.com` and finds nothing → the admin would be locked out of the admin dashboard after deploy. Do **not** delete or recreate the existing Firebase Auth account. Follow the safe reversible migration in **§10** (create the correctly-IDed doc, keep the old one). This must be done in the console (owner privileges bypass rules) **after** the rules deploy.
 3. **Deploy**
    - [ ] Confirm the branch's CI run is green (rules suite + Node suites).
    - [ ] `firebase deploy --only firestore` (rules + indexes).
-   - [ ] Verify in the console: Rules tab shows the v3.2 ruleset; Indexes tab shows no new composite indexes required.
+   - [ ] Verify in the console: Rules tab shows the v3.5.2 ruleset; Indexes tab shows no new composite indexes required.
 4. **Smoke-test on a device/emulator** (app pointed at the project)
    - [ ] Admin signs in → dashboard loads, committee bootstrap at zero.
    - [ ] Add a student (email) → student signs in → profile auto-created (student, ₹0).
@@ -389,11 +464,14 @@ firebase deploy --only firestore --project jkss-fund
 
 ## 7. Assessment — safe for testing vs ready for real funds
 
-**Safe for testing: YES** — once the CI rules suite is green (see §4.2).
-The ruleset is defense-in-depth (least privilege, batch-validated financial
-writes, no catch-alls, verified language constructs), the accounting is
-exact-integer with independently re-derived invariants, and the app flows are
-transactional with idempotency.
+**Safe for testing: YES** — the CI rules suite is currently **green**
+(commit `3cbe1da`, run `38704744622`: 75/75, see §4.2). The ruleset is
+defense-in-depth (least privilege, batch-validated financial writes, no
+catch-alls, engine-verified constructs only), the accounting is exact-integer
+with independently re-derived invariants, and the app flows are transactional
+with idempotency. **Two console prerequisites precede any real-data use:
+the admin-profile migration (§10) and, if Google sign-in is wanted, the
+OAuth checklist (§9.3/§10.3).**
 
 **Ready for real funds: NO — not yet, and not fully achievable on Spark.**
 Remaining risks:
@@ -454,12 +532,18 @@ real-money movement on the current architecture.
   (no escalation path). Demoting an admin requires console access (owner
   privileges bypass rules).
 - **Automatic migration of legacy docs** — not automated (no data
-  modification without approval). Manual steps in §6.2.
+  modification without approval). Manual steps in §6.2 (incl. the v3.5.2
+  `txnSeq: 0` backfill).
+- **Admin profile migration** — the existing production admin doc
+  (ID `thrikkakarajkss` vs email `thrikkakarajkss@gmail.com`) needs a
+  correctly-IDed companion doc before the v3.5 rules go live. **Not done**
+  (no production data modification without approval); exact reversible
+  console steps in **§10**.
 - **Google sign-in** — not configurable from this repo: the project's
   `google-services.json` ships with `oauth_client: []` (no OAuth clients
   registered at all), so there are no client IDs to plug in yet. The app is
   built to enable it automatically the moment real IDs land in
-  `mobile/src/config.js` (+ `app.json`). See §9.
+  `mobile/src/config.js` (+ `app.json`). Exact console checklist in **§10.3**.
 - **iOS / Hosting** — out of scope per the task.
 - **`removedAt` tombstones are never un-set** — re-adding a removed student
   requires a fresh identity (or console edit). Product decision.
@@ -523,3 +607,133 @@ Requested checks, with results:
 - Nothing in `config.js`/`app.json` contains real secrets ✔ (placeholders
   only, and the only credential-adjacent value in the repo is the standard
   client API key inside `google-services.json`).
+
+---
+
+## 10. Manual console actions required (reversible, no approval-grabbing)
+
+These are the only things that cannot be done from this repository. They are
+ordered so that nothing is irreversible, and nothing modifies or deletes the
+existing admin Firebase Auth account or the old admin document.
+
+### 10.1 Admin profile migration (reversible) — do this AFTER the rules deploy
+
+**Why:** the v3.5 rules resolve "is this user an admin" as
+`exists(users/{auth.email}) && users/{auth.email}.data.role == 'admin'`. The
+existing production admin document has **ID `thrikkakarajkss`** but its
+`email` field is `thrikkakarajkss@gmail.com`. A sign-in as the existing
+account presents `auth.email = thrikkakarajkss@gmail.com`, so the rule looks
+up `users/thrikkakarajkss@gmail.com` — which does not exist — and the admin
+would be locked out of every admin operation (including the pre-authorization
+of students) once the new rules are live.
+
+**Do (console, owner credentials — console writes bypass rules):**
+1. Open **Firestore → `users`** collection. Open the document
+   `thrikkakarajkss`. Note its **full field set** (email, role, full_name,
+   avatar, balancePaise, balance, and anything else — including
+   `removedAt`/`lastActiveAt` if present).
+2. Create a **new** document in `users` with ID exactly
+   `thrikkakarajkss@gmail.com` (the lowercase auth email — must match the
+   Firebase Auth account's email character-for-character).
+3. Copy **every field** from the old document into the new one, **except**
+   ensure:
+   - `email` = `thrikkakarajkss@gmail.com` (the doc ID),
+   - `role` = `admin`,
+   - `txnSeq` = `0` (required by the v3.5.2 protocol; if the old doc has no
+     `txnSeq`, add it — this is the only field you add),
+   - balances: keep the old doc's `balancePaise`/`balance` values **exactly
+     as they are** (an admin's balance is normally 0; if it is non-zero,
+     keep it — the rules never move it).
+4. **Do not delete, edit, or move the old `thrikkakarajkss` document.** It
+   becomes an inert archive (nothing in the rules or app references that ID
+   anymore, so it can no longer grant anything).
+
+**Verify (no production financial data touched):**
+- In the app, sign in with the existing admin email/password (or Google,
+  once configured) → the admin dashboard opens, the student list loads, and
+  "add student" (pre-authorization) works.
+- If anything looks wrong, **revert** by deleting the new
+  `users/thrikkakarajkss@gmail.com` document only. The old document and the
+  Auth account were never touched, so the system returns exactly to its
+  pre-migration state. (The only irreversible-looking step is the delete
+  used to revert, which removes a doc you just created.)
+
+**Constraints honored:** the existing Firebase Auth account is not deleted,
+recreated, or password-reset; no production document is deleted; the old
+admin doc is preserved; no credentials are exposed or stored in the repo; the
+migration is a pure console operation the owner can repeat or undo.
+
+### 10.2 Student pre-authorization (ongoing, in-app)
+
+With the rules live, new students are added by the **admin in the app**
+(Students screen → add student → valid email). The app creates
+`users/{lowercased email}` at zero balance with `txnSeq: 0` (the only create
+path the rules grant). A student who has Google/email sign-in but no such
+doc is signed in normally but sees the "awaiting admin authorization"
+screen and **cannot** open the student dashboard. No profile is ever
+auto-created by a student's first sign-in.
+
+### 10.3 Google Sign-In — exact Google Cloud Console checklist
+
+Re-checked against the repo: `mobile/google-services.json` is the **real**
+config for project `jkss-fund` (project number `753895495162`, package
+`com.jkssfund.app`), but its `oauth_client` array is **empty**, and
+`mobile/app.json → extra.googleWebClientId` is still a placeholder. The app
+deliberately hides the Google button until real IDs exist (email/password
+works regardless). To enable Google Sign-In, do exactly this in the **Google
+Cloud console** for project `jkss-fund` (you must not create duplicate
+clients — check existing credentials first):
+
+1. **Android OAuth client (required for the native app).**
+   - Go to **APIs & Services → Credentials → Create credentials → OAuth
+     client ID → Android**.
+   - Name: e.g. `JKSS-FUND Android`.
+   - Package name: `com.jkssfund.app` (must match exactly).
+   - SHA-1 fingerprint(s): the SHA-1 of the certificate that will sign the
+     app.
+       - **Debug builds** (Expo development build / local `expo prebuild` +
+         gradle): the Android debug keystore's SHA-1. On a machine that has
+         built the app:
+         `keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android`
+         (note the `SHA1:` line).
+       - **Release APK** (Play/CI-signed): the SHA-1 of the upload/app
+         signing key you generate (keep the keystore file safe; it is never
+         committed to this repo).
+   - This creates an OAuth client ID of the form
+     `NNNN.apps.googleusercontent.com`.
+2. **Web OAuth client (required by `react-native-google-signin` on the web
+   path and by Firebase for the token exchange).**
+   - **Create credentials → OAuth client ID → Web application**.
+   - Name: e.g. `JKSS-FUND Web`.
+   - Authorized JavaScript origins: `http://localhost` (local dev) and your
+     production web origin if any (e.g. `https://jkss-fund.web.app` — only
+     if you later add Hosting; not required for Android).
+   - Copy the resulting Web client ID.
+3. **Paste the real IDs into the app** (this is the only repo change the
+   OAuth work needs — no code change required):
+   - `mobile/app.json → extra.googleWebClientId` = the **Web** client ID.
+   - `mobile/src/config.js → GOOGLE_ANDROID_CLIENT_ID` = the **Android**
+     client ID (and confirm `GOOGLE_WEB_CLIENT_ID` reads from `app.json`).
+   - After this, `GOOGLE_SIGNIN_CONFIGURED` becomes true, `AuthContext`
+     configures Google Sign-In, and the Google button appears on the login
+     screen.
+4. **No other console action is required** — do not add the app again in
+   Firebase's "Your apps" (the Android app + `google-services.json` already
+   exist and are correct), do not create duplicate OAuth clients, and do not
+   enable billing.
+
+> If you prefer Firebase's own UI: **Project settings → Your apps → (the
+> Android app) → add the SHA-1/SHA-256 to its signing keys, then re-download
+> google-services.json** — the freshly downloaded file will now contain a
+> non-empty `oauth_client` array, and you can drop it straight into
+> `mobile/google-services.json`. That produces the same Android client as
+> step 1.
+
+### 10.4 What you must NOT do (boundaries)
+
+- Do not deploy the rules, change Firebase billing/plan, modify production
+  financial data, or delete any document without explicit approval.
+- Do not delete/recreate/reset the existing admin Firebase Auth account.
+- Do not enable iOS or Firebase Hosting (out of scope).
+- Do not commit service-account credentials, private keys, or the release
+  signing keystore to this repository.
