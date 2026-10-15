@@ -14,6 +14,10 @@
 // legacyAuthorizations document (a legacy student on hold) reads and writes
 // no financial data through any path, while admin reconciliation and the
 // username path are unaffected.
+// Section 15 proves the pre-authorization gate: a student financial path needs
+// a VERIFIED email, a users/{email} profile with role 'student', and EITHER a
+// username identifier OR a legacy authorization. Accounts without a usable
+// profile, with an unverified email, or with the wrong role get nothing.
 //
 // Runs the DEPLOYED rules (firebase/firestore.rules) inside the real
 // Firestore emulator (production rules engine) via the official
