@@ -96,6 +96,9 @@ correctness bugs that the new rules would have punished:
 
 ## 2. Modified files & why
 
+> Historical record of the pre-v3.0 rewrite. For the v3.0 deltas see §2.1. Where this table
+> and the runbook disagree, the runbook (`docs/USERNAME_LOGIN.md` §8) wins.
+
 | File | Change |
 |------|--------|
 | `firebase/firestore.rules` | **Full rewrite (v3.2)** — least-privilege ruleset using only verified language constructs (design in §3); batch protocol with exact-path cross-references; tombstone job reversal |
@@ -470,17 +473,15 @@ CI runs the same on every push: `.github/workflows/firestore-rules.yml`
 `.github/workflows/username-login.yml` (node suites + the provisioning E2E job).
 Both jobs fail unless the output ends with `N passed, 0 failed`.
 
-### Deploy the rules (only after the test suite passes and you approve the production change)
+### Deploy the rules — gated, last (see `docs/USERNAME_LOGIN.md` §8, step 7)
 
-> **Not part of v3.0:** `firestore.rules` is unchanged by the username work, so
-> username login needs **no rules deploy**. The command below is for a future
-> rules change only.
+> Deploying the rules is **not** part of merging this PR or of setting up username
+> login. It happens once, in the order given in the runbook §8, after the admin
+> profile check (step 5) and the `txnSeq` backfill (step 6). The command is shown here
+> for reference only. Do not run it earlier.
 ```bash
 cd firebase
-npm i -g firebase-tools
-firebase login
-firebase use --add            # select the real project (default is jkss-fund)
-firebase deploy --only firestore --project jkss-fund
+firebase deploy --only firestore --project jkss-fund   # runbook §8 step 7 only
 ```
 
 ---
@@ -498,12 +499,12 @@ firebase deploy --only firestore --project jkss-fund
 2. **Firestore** (production mode — no changes needed for Spark; quotas are ample for a small fund)
    - [ ] `users` collection: create the first admin document (ID = lowercase admin email; `email`, `role: "admin"`, `full_name`, `avatar: ""`, `balancePaise: 0`, `balance: 0`). This must exist **before** the rules deploy (the bootstrap chicken-and-egg: only an admin can create admins, and no update path can grant the role).
    - [ ] Do **not** pre-create `meta/committee` — the app bootstraps it at zero.
-   - [ ] Legacy data (if any): leave the old top-level `transactions` collection in place (admin-read-only). Old `users/{id}` docs with non-email IDs or float-only balances: migrate to lowercase-email IDs **before** deploying (the new rules reject non-email IDs) and add `balancePaise = round(balance*100)`. **Also add `txnSeq: 0` to every existing user doc** (v3.5.2: the withdrawal counter is required on every user write — a doc without it cannot be the subject of a verified withdrawal/credit/reversal batch until it has `txnSeq: 0`). Old `jobs` without map `allocations`: leave them — the app refuses auto-reversal and flags them for manual reconciliation; note that v3.2 jobs use the **map** format, so mixed v3.1 list-format jobs cannot be reversed automatically either.
-   - [ ] **Admin profile**: the existing production admin doc uses ID `thrikkakarajkss` but its `email` field is `thrikkakarajkss@gmail.com`. The v3.5 rules resolve admin via the **doc ID == auth email**, so a sign-in as the existing account looks up `users/thrikkakarajkss@gmail.com` and finds nothing → the admin would be locked out of the admin dashboard after deploy. Do **not** delete or recreate the existing Firebase Auth account. Follow the safe reversible migration in **§10** (create the correctly-IDed doc, keep the old one). This must be done in the console (owner privileges bypass rules) **after** the rules deploy.
-3. **Deploy**
-   - [ ] Confirm the branch's CI run is green (rules suite + Node suites).
-   - [ ] `firebase deploy --only firestore` (rules + indexes).
-   - [ ] Verify in the console: Rules tab shows the v3.5.2 ruleset; Indexes tab shows no new composite indexes required.
+   - [ ] Legacy data (if any): leave the old top-level `transactions` collection in place (admin-read-only). Old `users/{id}` docs with non-email IDs or float-only balances: migrate to lowercase-email IDs **before** deploying (the rules do not validate ID format; a legacy document with a non-email ID is unreachable to any student, because students can read only `users/<their own auth email>`, and it stays visible to the admin) and add `balancePaise = round(balance*100)`. **Also add `txnSeq: 0` to every existing user doc** (v3.5.2: the withdrawal counter is required on every user write — a doc without it cannot be the subject of a verified withdrawal/credit/reversal batch until it has `txnSeq: 0`). Old `jobs` without map `allocations`: leave them — the app refuses auto-reversal and flags them for manual reconciliation; note that v3.2 jobs use the **map** format, so mixed v3.1 list-format jobs cannot be reversed automatically either.
+   - [ ] **Admin profile**: the existing production admin doc uses ID `thrikkakarajkss` but its `email` field is `thrikkakarajkss@gmail.com`. The v3.5 rules resolve admin via the **doc ID == auth email**, so a sign-in as the existing account looks up `users/thrikkakarajkss@gmail.com` and finds nothing → the admin would be locked out of the admin dashboard after deploy. Do **not** delete or recreate the existing Firebase Auth account. Follow the safe reversible migration in **§10** (create the correctly-IDed doc, keep the old one). This must be done in the console (owner privileges bypass rules) **before** the rules deploy (runbook §8 step 5).
+3. **Deploy** (gated — runbook §8 step 7; do not start until its prerequisites are ticked)
+   - [ ] Prerequisites in `docs/USERNAME_LOGIN.md` §8 step 7 are all ticked, including the admin-profile check (step 5) and the `txnSeq` backfill (step 6).
+   - [ ] `firebase deploy --only firestore --project jkss-fund` (rules + indexes), run from a clean checkout of the merge commit.
+   - [ ] Verify in the console: the Rules tab shows the new release; the Indexes tab shows no new composite index required.
 4. **Smoke-test on a device/emulator** (app pointed at the project)
    - [ ] Admin signs in → dashboard loads, committee bootstrap at zero.
    - [ ] Add a student (email) → student signs in → profile auto-created (student, ₹0).
@@ -691,7 +692,10 @@ These are the only things that cannot be done from this repository. They are
 ordered so that nothing is irreversible, and nothing modifies or deletes the
 existing admin Firebase Auth account or the old admin document.
 
-### 10.1 Admin profile migration (reversible) — do this AFTER the rules deploy
+### 10.1 Admin profile migration (reversible) — do this BEFORE the rules deploy
+
+> Order: runbook §8 step 5 (verify) and step 7 (deploy). If the admin document is
+> missing when the rules go live, the admin is locked out.
 
 **Why:** the v3.5 rules resolve "is this user an admin" as
 `exists(users/{auth.email}) && users/{auth.email}.data.role == 'admin'`. The
@@ -724,8 +728,7 @@ of students) once the new rules are live.
    anymore, so it can no longer grant anything).
 
 **Verify (no production financial data touched):**
-- In the app, sign in with the existing admin email/password (or Google,
-  once configured) → the admin dashboard opens, the student list loads, and
+- In the app, sign in with the existing admin email/password  → the admin dashboard opens, the student list loads, and
   "add student" (pre-authorization) works.
 - If anything looks wrong, **revert** by deleting the new
   `users/thrikkakarajkss@gmail.com` document only. The old document and the
@@ -740,13 +743,13 @@ migration is a pure console operation the owner can repeat or undo.
 
 ### 10.2 Student pre-authorization (ongoing, in-app)
 
-With the rules live, new students are added by the **admin in the app**
-(Students screen → add student → valid email). The app creates
-`users/{lowercased email}` at zero balance with `txnSeq: 0` (the only create
-path the rules grant). A student who has Google/email sign-in but no such
-doc is signed in normally but sees the "awaiting admin authorization"
-screen and **cannot** open the student dashboard. No profile is ever
-auto-created by a student's first sign-in.
+With the rules live, the admin adds a student **by username** in the app (Students
+screen → add student). The app writes `users/<username>@students.jkss-fund.invalid`
+in exactly the shape the rules allow (`addStudent` in `mobile/src/api.js`): role
+`student`, zero balances, `txnSeq: 0`, no other data. That document is the only way a
+student gets a profile. A student who signs in with a username but has no such document
+is signed in normally, sees the "awaiting admin authorization" screen, and **cannot**
+open the student dashboard. No profile is ever created from a student's own sign-in.
 
 ### 10.3 Google Sign-In — exact Google Cloud Console checklist
 

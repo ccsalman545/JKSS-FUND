@@ -135,10 +135,9 @@ See **`firebase/README.md`**. In short:
 2. Create a **Cloud Firestore** database.
 3. Add an **Android app** (`com.jkssfund.app`); download `google-services.json` → overwrite
    `mobile/google-services.json`.
-4. **Deploying the rules is optional and review-gated** — it is not needed for
-   username login. Run the emulator suite first, and only then
-   `cd firebase && firebase deploy --only firestore` (which deploys rules +
-   indexes to the real project). Nothing in v3.0 requires it.
+4. **Firestore rules are deployed last, as a gated step** — see
+   `docs/USERNAME_LOGIN.md` §8 (step 7). Merging code does not deploy them, and they must
+   not go live before the admin-profile check (step 5) and the `txnSeq` backfill (step 6).
 5. Create the **first admin**: add an Auth user in the console, then set that user's
    Firestore `users/{email}` doc `role` to `admin`.
 6. **Create the student logins once** with the local provisioning tool — see
@@ -229,10 +228,8 @@ firebase emulators:exec --project jkss-fund-e2e --only firestore,auth \
 - [ ] Firebase Auth **Email/Password** enabled
 - [ ] **Security rules test suite executed and green** (`firebase emulators:exec --only firestore "node test/rules.test.js"`)
 - [ ] Legacy data migrated (see `SECURITY_REVIEW.md` §6.2) if the fund already has data
-- [ ] Firestore rules + indexes deployed **if you want the hardened rules live**
-      (`cd firebase && firebase deploy --only firestore`) — review the
-      `SECURITY_REVIEW.md` §10 console steps first; v3.0 itself needs no rules
-      deploy
+- [ ] Firestore rules deployed — **only** at `docs/USERNAME_LOGIN.md` §8 step 7, after the
+      admin-profile check (step 5) and the `txnSeq` backfill (step 6)
 - [ ] First admin `role` set to `admin` in Firestore (with `balancePaise: 0`)
 - [ ] Student accounts provisioned (`node tools/provision/provision.js apply … --apply`) and
       temporary passwords distributed privately

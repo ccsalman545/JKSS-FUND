@@ -26,7 +26,10 @@ The app no longer uses a custom server. All auth, data, and rules live in Fireba
 > in `mobile/package.json`) rather than as Gradle BoM dependencies. Only run the
 > manual Gradle steps if you leave Expo and build a raw native Android app.
 
-## 3. Deploy rules + indexes
+## 3. Deploy rules + indexes (gated: the last step)
+
+> Do not run this until `docs/USERNAME_LOGIN.md` §8 steps 5 and 6 are complete (admin-profile
+> check, `txnSeq` backfill). It is step 7 of that order.
 `firebase/.firebaserc` defaults to `jkss-fund` — the real project (verified
 against `mobile/google-services.json`). Emulator runs in CI always pass
 `--project jkss-fund-local` explicitly (a valid lowercase id that can never

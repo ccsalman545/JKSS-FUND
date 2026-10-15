@@ -39,20 +39,26 @@ The login screen needs no Google configuration any more: students sign in with a
 admin-assigned **username + password**, and the admin signs in with the existing
 email + password. See `docs/USERNAME_LOGIN.md` §2.
 
-## 2. Firestore rules — no deploy required
+## 2. Firestore rules — a gated later step (not part of merging)
 
-`firebase/firestore.rules` was **not modified by v3.0**, so there is nothing to
-deploy. A student's Firebase Authentication email *is* their internal identifier,
-which is exactly what the rules already key on (see `docs/USERNAME_LOGIN.md` §2).
+Merging this PR does **not** change the live database. `firebase/firestore.rules` is
+unchanged here, but the live project has whatever ruleset is published today, which is
+recorded in runbook §8 step 3.
 
-If you ever do change and redeploy the rules, always run the emulator suite first
-and never deploy a failing suite:
+The audited rules are deployed **only** at `docs/USERNAME_LOGIN.md` §8 step 7, after the
+admin profile is verified (step 5) and the `txnSeq` backfill is done (step 6). Before any
+deploy, run the emulator suite and confirm it passes:
 
 ```bash
 cd firebase
 npm ci
 firebase emulators:exec --project jkss-fund-local --only firestore "node test/rules.test.js"
 # expect the last line: 89 passed, 0 failed
+```
+
+Then, and only at that gate:
+
+```bash
 firebase deploy --only firestore --project jkss-fund
 ```
 

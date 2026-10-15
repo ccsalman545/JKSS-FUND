@@ -401,6 +401,9 @@ only after the review checklist below is complete.
 | **C. Stay on the real email** | Available | The login form accepts an email, so the old profile keeps working and no data moves. Record the link with `legacyIdentifier`. |
 | **D. Fresh identity via `ignoreLegacy`** | **Not chosen; not recommended** | Creates a second profile beside the legacy one. That is the duplicate and orphan risk this plan exists to prevent. It needs explicit approval per student. |
 
+> Step 6 of §8 also backfills `txnSeq: 0` on held legacy documents unless decision
+> D-1 changes that. Read it before running `apply`.
+>
 > Naming note: an earlier draft of this runbook used the letter **B** for the
 > `ignoreLegacy` route. The letter B now means *hold back*, which is the decision
 > above. The `ignoreLegacy` route is labelled **D** so the two can't be confused.
@@ -456,56 +459,223 @@ Option C until the ledger can be reconciled deliberately.
 
 ---
 
-## 8. Manual deployment checklist
+## 8. Deployment order (the only approved sequence)
 
-Ordered, with the rollback for each step. **Steps 1–3 are the only writes to the
-real project, and each one is reversible.**
+This is the one order that governs the release. `SECURITY_REVIEW.md` §5, §6 and §10
+and the other docs point here. **Each step is a separate gate.** Do not start a step
+until the previous gate's evidence is written down in the release log.
 
-1. **Merge/review the code** — CI green on the branch
-   (`Firestore rules` + `Username login (v3.0)` jobs). No production change yet.
-2. **Verify the identifier format in a non-production environment**
+The release log is a dated note kept **outside the repository** (for example
+`~/jkss-release-log.md`). Record in it: the merge commit SHA, each command run with
+its output summary, the live ruleset baseline, the admin-profile check, every
+approval, and every rollback.
 
-   ```bash
-   node tools/provision/provision.js verify-identifier --project <test-project> \
-     --credentials <test-admin.json> --api-key <web-api-key>
-   ```
+| # | Step | Touches production? | Gate to proceed |
+|---|---|---|---|
+| 1 | Merge the reviewed code | No | CI green on the PR head |
+| 2 | Verify the identifier format in a non-production project | No (test project only) | all four `verify-identifier` checks PASS |
+| 3 | Run the production `plan` (read-only) and review the full report | **Read only** | report reviewed, live ruleset recorded |
+| 4 | Keep legacy-held students on hold (Option B) | No | held list confirmed and recorded in `roster.json` |
+| 5 | Verify the admin profiles | **Read only** | both admin docs as expected (otherwise stop) |
+| 6 | `txnSeq: 0` backfill + eligible-student provisioning | **Yes — writes** | written approval; decision D-1 answered |
+| 7 | Deploy the audited Firestore rules | **Yes — production rules** | every prerequisite ticked; written approval; rollback baseline saved |
+| 8 | Build the APK and run a controlled smoke test | Yes, controlled | APK built from the merge commit; smoke checklist passed |
 
-   Expected: all four checks `PASS` (or run it against the Auth emulator).
-3. **Provision the roster** (dry run, read the report, then apply)
+Non-negotiable throughout: no student account is created, no password is reset,
+no legacy record is migrated, and no billing or Spark-plan change is made, except
+where a step below explicitly allows it after approval.
 
-   **Gate before any real `apply`:** the held list is reviewed (§7.2). Every
-   `HELD BACK`, `migration-review`, `link-legacy`, `needs-review` and
-   `held` student in the plan has been looked at by the owner, and each hold
-   still has its reason in `roster.json`. Lifting a hold is a separate, recorded
-   change, not part of this step.
+### Step 1 — merge the reviewed code
 
-   ```bash
-   node tools/provision/provision.js plan  --project jkss-fund --credentials <admin.json>
-   node tools/provision/provision.js apply --project jkss-fund --confirm-project jkss-fund \
-        --credentials <admin.json> --apply
-   ```
+* The owner merges the PR after CI passes: `gh pr merge <N> --merge`. Nothing in
+  this order merges code.
+* Record the merge commit SHA. Every later step refers to that SHA.
+* Check that `firebase/firestore.rules` in the merge commit is the file the
+  `Firestore rules` CI job tested. Merging does **not** change the live database,
+  because the rules are not deployed by merging.
 
-   Rollback: the created accounts/profiles are the ones the tool just made (they
-   are listed in the report with `created` status); no existing document was
-   modified except additive `txnSeq: 0` fields.
-4. **Distribute the temporary passwords** (credentials file, one per student,
-   privately). Keep the file out of Git; move it to a password manager
-   afterwards.
-5. **Build the app** (`cd mobile && npm install && eas build -p android
-   --profile preview`) and update the installed app. The old build's Google
-   button will fail — it was hidden unless OAuth clients existed, which they
-   never did, so nothing regresses on the device.
-6. **Migrate held students** (once, deliberately) — §7.2/§7.3, with the backup.
-7. **Smoke-test on a device with a real account** (not the admin's own):
-   student signs in with a username → dashboard opens → admin adds a job →
-   the student sees the split → the student changes their password →
-   signs out and back in with the new one → admin reverses the test job.
-8. **Console housekeeping** — check *Authentication → Settings → User actions*
-   (no verification/reset mail is sent by the app), and confirm the two admin
-   documents + the admin Auth account are untouched.
-9. **Nothing else**: no rules deploy, no billing change, no Cloud Functions, no
-   Hosting. (`firebase deploy` is **not** part of this release: `firestore.rules`
-   did not change.)
+### Step 2 — verify the identifier format (non-production only)
+
+```bash
+node tools/provision/provision.js verify-identifier --project <TEST-PROJECT> \
+  --credentials <TEST-ADMIN.json> --api-key <TEST-WEB-API-KEY>
+```
+
+* Use a separate Firebase project with Email/Password enabled. The tool refuses
+  to run against `jkss-fund`.
+* Expected: all four checks `PASS`, and the throwaway account it creates is
+  deleted afterwards (unless `--keep` was given).
+* Any failure: stop. Do not provision. Never send a password-reset email to a
+  synthetic identifier.
+
+### Step 3 — the production `plan` (read-only)
+
+```bash
+cd tools/provision
+node provision.js plan --project jkss-fund --credentials <ADMIN.json> --out ./reports
+```
+
+No `--apply` is passed. This only reads Auth users, `users/*` documents and jobs. Its
+only local side effect is a `0600`, git-ignored report file under `reports/`.
+
+Review the **complete** report, not only the summary:
+
+1. Each of the 24 students: status, username, identifier, legacy match (score,
+   reasons, balance, `txnCount`), hold and notes.
+2. `needs MANUAL REVIEW` (must be 0, or each entry explicitly resolved) and the
+   weak name-only matches (warnings only, never auto-linked).
+3. The `txnSeq:0` backfill list: **every** id, including held legacy documents.
+4. The admin-profile section: both admin documents, both preserved.
+5. Unmatched profiles (former students): listed, never touched.
+6. `liveJobs` and `liveActiveJobs`: how many jobs use legacy-keyed allocations
+   (feeds the legacy lien in §7.4).
+7. **The live ruleset.** Open Firebase console → Firestore → Rules and read it
+   (read-only). Record its release timestamp and copy its text into the release
+   log. This is the rollback baseline. The repository cannot see what is live.
+
+Gate: the report is saved outside Git and the owner has signed off on it.
+
+### Step 4 — keep legacy-held students on hold (Option B)
+
+* Every student whose plan status is `migration-review`, `link-legacy` or
+  `needs-review` stays on hold. Under Option B nothing is created, reset or
+  migrated for them (§7.2).
+* Record each hold explicitly in `roster.json`: `"hold": true` plus a
+  `holdReason`. This is a repository change, reviewed through a PR, not a
+  production change.
+* Re-run `plan`. The `students on ROSTER HOLD` count must equal the number of held
+  students.
+* A hold is lifted only through the per-student review checklist in §7.2, as a
+  separate recorded change. It is never lifted as part of this order.
+* Verified students (status `create` or `exists`, no legacy match, no hold) remain
+  eligible for step 6.
+
+### Step 5 — verify the admin profiles (read-only)
+
+Check all four, and write the results in the release log:
+
+1. Firebase Auth has the account `thrikkakarajkss@gmail.com` (Email/Password).
+   Its password is not changed, reset or deleted.
+2. `users/thrikkakarajkss@gmail.com` exists with `role` = `admin` and `email` =
+   `thrikkakarajkss@gmail.com`. **This is the document the rules check.** `isAdmin()`
+   reads `users/<signed-in email>`. Without it, the admin is locked out as soon as
+   the rules are live.
+3. `users/thrikkakarajkss` exists and is recorded **unchanged**: copy its full field
+   set and last-update time into the release log. Do not edit, move or delete it.
+4. The plan's admin section lists both documents.
+
+**If check 2 is missing: stop.** Do not deploy the rules. Creating the document is a
+production write, so it needs explicit approval. The procedure is SECURITY_REVIEW
+§10.1. In summary: create a new document whose ID is the auth email, copy the old
+document's fields, set `role: admin`, add `txnSeq: 0` only if it is absent, keep the
+balances exactly as they are, and leave the old document untouched.
+
+### Step 6 — `txnSeq: 0` backfill and eligible-student provisioning (approval required)
+
+**Decision D-1 (owner must answer before this step):**
+`apply` backfills `txnSeq: 0` on **every** profile that lacks it. That includes held
+legacy documents. The rules require an integer `txnSeq` before a withdrawal can
+be written, so once the rules are live a backfilled legacy document can withdraw if
+its holder signs in with that email.
+
+* **(a) As coded:** backfill everything, held documents included. The hold stops
+  provisioning and migration only.
+* **(b) Recommended:** exclude held legacy documents from the backfill, so a held
+  record stays frozen until it is reviewed. This needs a small code change first and
+  its own review. Until it is merged, do not run this step with held documents on
+  the backfill list.
+
+Run only after written approval, with D-1 answered:
+
+```bash
+node provision.js apply --project jkss-fund --confirm-project jkss-fund \
+  --credentials <ADMIN.json> --apply
+```
+
+What it does: creates the Auth account and pre-authorized profile for eligible
+students only; adds `txnSeq: 0` only where it is missing; never resets an existing
+password; writes new temporary passwords only to the credentials file (`0600`,
+git-ignored). It changes no balance, role, ledger record or admin document.
+
+After it finishes:
+
+* Hand each temporary password to its student privately, then delete the file
+  (§4.4).
+* Re-run `plan`. Expect `students to CREATE 0`, the `txnSeq:0 backfills required`
+  list empty (or, under (b), containing only the held documents), and the held count
+  unchanged.
+* Re-run `apply --apply`. Expect `created 0` (the run is idempotent).
+
+Rollback: the report lists every record this step created. Removing any of them
+requires approval, and each one is deleted by its id. `txnSeq: 0` is additive and is
+the rules' starting counter, so it is left in place. No money moved in this step.
+
+### Step 7 — deploy the audited Firestore rules (approval required)
+
+**All prerequisites must be ticked. Any unticked item stops the step:**
+
+- [ ] The merge commit from step 1 is the one being deployed, and its `Firestore rules`
+      CI job (rules unit tests) is green. Deploy from a clean checkout of that commit,
+      never from a dirty tree.
+- [ ] Step 5 passed: `users/thrikkakarajkss@gmail.com` exists with `role: admin`.
+- [ ] Step 6 complete: the plan's backfill list is empty (or contains only the held
+      documents, under decision D-1(a)).
+- [ ] Every user document has an integer `balancePaise` (checked in the console).
+      The withdrawal path requires it.
+- [ ] The console Indexes tab was reviewed, and any change in `firestore.indexes.json`
+      is approved.
+- [ ] The live ruleset baseline from step 3 is saved in the release log.
+- [ ] Written owner approval for this production rules change.
+
+Deploy (from the merge commit):
+
+```bash
+cd firebase
+firebase deploy --only firestore --project jkss-fund
+```
+
+This deploys the rules and the indexes. Verify immediately: the console Rules tab
+shows the new release, and the Indexes tab shows no new index required. Then run
+step 8, starting with the admin sign-in.
+
+Rollback: in the console's Rules tab, republish the baseline release from the
+release history. If that is unavailable, redeploy the saved baseline file. Do not
+roll back by editing data.
+
+### Step 8 — build the APK and run a controlled smoke test
+
+Build (owner's EAS account; this repository creates no credentials):
+
+```bash
+cd mobile && npm ci && eas build -p android --profile preview
+```
+
+Before installing, check that the build is from the merge commit, that the package is
+`com.jkssfund.app`, and that `google-services.json` is for `jkss-fund`.
+
+Smoke test, production, with a **consenting** roster student and amounts agreed in
+advance:
+
+1. Admin signs in with email and password. The dashboard opens and the student list
+   loads.
+2. Negative checks: a wrong password and an unknown username both show the same
+   generic message. A student with no profile sees the "not pre-authorized" screen.
+3. Student signs in with username and the temporary password. The dashboard opens.
+   The student changes the password, then signs out and back in with the new one.
+4. Admin adds a small agreed job. The committee and the student split match the
+   expected paise amounts.
+5. The student sees the split, and the balance updates live.
+6. Admin reverses the test job. Balances return to their starting values exactly.
+7. Held students still have no account and no profile change, compared with the
+   step 3 snapshot.
+8. No password-reset or verification email was sent to any synthetic identifier.
+
+Record each result in the release log. Any failure: stop, and roll back under step 7.
+
+### Step 9 — nothing else
+
+No billing change, no Cloud Functions, no Hosting, no Spark-plan change. The rules
+change only at step 7, and the held students change only through §7.2.
 
 ---
 
