@@ -192,7 +192,9 @@ the tool prints the identifier table so nothing has to be computed by hand).
 cd tools/provision
 npm install
 
-# 0) Pure-offline roster plan — no credentials, no network, writes nothing:
+# 0) Pure-offline roster plan — no credentials, no network, nothing written to
+#    Firebase (the only side effect is a local, 0600, git-ignored report file
+#    under tools/provision/reports/):
 node provision.js
 
 # 1) Real plan against the project (READ-ONLY: lists Auth users + users/* docs,
@@ -471,7 +473,7 @@ real project, and each one is reversible.**
 | `tools/provision/test/plan.test.js` | local + CI | **36 passed, 0 failed** — roster → username, collision rules, ambiguity/weak-match handling, held-back students, admin preservation, safety gates, CLI parsing, **docs↔code mapping drift** |
 | `tools/provision/test/passwords.test.js` | local + CI | **15 passed, 0 failed** — CSPRNG passwords (20k uniqueness), unambiguous alphabet, policy compliance, 0600 credentials file, never-overwrite |
 | `firebase/test/rules.test.js` | CI (`Firestore rules`, emulator) | **89 passed, 0 failed** in the production rules engine (14 new synthetic-identifier scenarios: pre-authorization, unauthorized-account lockout, withdrawals/credits/reversals with synthetic ids, no rules loosening) |
-| `tools/provision/test/emulator.test.js` | CI (`provisioning-e2e`, Auth+Firestore emulators) | **31 passed, 0 failed** — dry-run writes nothing, 23 accounts created idempotently, admin account+password and both admin docs preserved, balances/ledgers byte-identical, no plaintext password in Firestore, valid/invalid password sign-in, unauthorized student has no profile, reset-password, identity migration with backup, safety gates |
+| `tools/provision/test/emulator.test.js` | CI (`provisioning-e2e`, Auth+Firestore emulators) | **31 passed, 0 failed** — a dry run creates no Auth user and touches no document, 23 accounts created idempotently, admin account+password and both admin docs preserved, balances/ledgers byte-identical, no plaintext password in Firestore, valid/invalid password sign-in, unauthorized student has no profile, reset-password, identity migration with backup, safety gates |
 
 Exact commands (also in `SECURITY_REVIEW.md` §5):
 

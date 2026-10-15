@@ -27,8 +27,8 @@ are in **Indian Rupees (₹)**.
 > **tombstone** reversals, and an automated test suite that runs the production rules
 > engine in CI on every push. See **[`SECURITY_REVIEW.md`](./SECURITY_REVIEW.md)** for
 > the vulnerability findings, the schema changes, the exact test/deploy commands, the
-> `app.json`/`.firebaserc`/OAuth configuration verification, and an honest "safe for
-> testing vs ready for real funds" assessment.
+> `app.json`/`.firebaserc` configuration verification, the v3.0 username-login
+> addendum, and an honest "safe for testing vs ready for real funds" assessment.
 
 The custom Express/SQLite backend has been **replaced by Firebase** (Authentication +
 Cloud Firestore + Security Rules), so there is **no server to run or host**.
@@ -131,7 +131,10 @@ See **`firebase/README.md`**. In short:
 2. Create a **Cloud Firestore** database.
 3. Add an **Android app** (`com.jkssfund.app`); download `google-services.json` → overwrite
    `mobile/google-services.json`.
-4. `cd firebase && firebase deploy --only firestore` (deploys rules + indexes).
+4. **Deploying the rules is optional and review-gated** — it is not needed for
+   username login. Run the emulator suite first, and only then
+   `cd firebase && firebase deploy --only firestore` (which deploys rules +
+   indexes to the real project). Nothing in v3.0 requires it.
 5. Create the **first admin**: add an Auth user in the console, then set that user's
    Firestore `users/{email}` doc `role` to `admin`.
 6. **Create the student logins once** with the local provisioning tool — see
@@ -222,7 +225,10 @@ firebase emulators:exec --project jkss-fund-e2e --only firestore,auth \
 - [ ] Firebase Auth **Email/Password** enabled
 - [ ] **Security rules test suite executed and green** (`firebase emulators:exec --only firestore "node test/rules.test.js"`)
 - [ ] Legacy data migrated (see `SECURITY_REVIEW.md` §6.2) if the fund already has data
-- [ ] Firestore rules + indexes deployed (`firebase deploy --only firestore`)
+- [ ] Firestore rules + indexes deployed **if you want the hardened rules live**
+      (`cd firebase && firebase deploy --only firestore`) — review the
+      `SECURITY_REVIEW.md` §10 console steps first; v3.0 itself needs no rules
+      deploy
 - [ ] First admin `role` set to `admin` in Firestore (with `balancePaise: 0`)
 - [ ] Student accounts provisioned (`node tools/provision/provision.js apply … --apply`) and
       temporary passwords distributed privately
@@ -235,3 +241,11 @@ firebase emulators:exec --project jkss-fund-e2e --only firestore,auth \
 ---
 
 **Ready for the Play Store. 🎉**
+
+Other docs: **[`DEPLOY.md`](./DEPLOY.md)** (app build + provisioning + what to do
+about the superseded Express web app), **[`docs/USERNAME_LOGIN.md`](./docs/USERNAME_LOGIN.md)**
+(the complete login/provisioning/migration runbook),
+**[`SECURITY_REVIEW.md`](./SECURITY_REVIEW.md)** (findings, tests, console steps),
+**[`tools/provision/README.md`](./tools/provision/README.md)**,
+**[`mobile/PLAY_STORE.md`](./mobile/PLAY_STORE.md)**,
+**[`PRIVACY_POLICY.md`](./PRIVACY_POLICY.md)**.

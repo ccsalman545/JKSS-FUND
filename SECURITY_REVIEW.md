@@ -120,6 +120,31 @@ correctness bugs that the new rules would have punished:
 | `mobile/src/config.js` | `GOOGLE_SIGNIN_CONFIGURED` flag derived from the client IDs (placeholders detected) |
 | `mobile/src/context/AuthContext.js` | `GoogleSignin.configure` called only with real IDs (placeholder IDs would make the native library misbehave); email/password auth unaffected |
 
+### 2.1 v3.0 delta (username/password logins)
+
+The table above is the security/accounting release's record. v3.0 changed **no
+rules**; it added:
+
+| File | Change |
+|------|--------|
+| `mobile/src/identity.js` | **New** — single source of truth: slugify → username → internal identifier, deterministic collision resolution, roster assignment, login resolution, password policy (shared by app, suites and tool) |
+| `mobile/src/api.js` | `login(usernameOrEmail, password)` (username → identifier, admin email passes through); `googleLogin` removed; `addStudent(username, …)` pre-authorizes `users/{identifier}`; profile exposes `username` **and** `loginIdentifier` |
+| `mobile/src/context/AuthContext.js` | Google Sign-In removed; `status` gate unchanged (unauthorized students never reach the dashboard) |
+| `mobile/src/screens/LoginScreen.js` | Username + password form, in-app help, no Google button |
+| `mobile/src/screens/NotAuthorizedScreen.js` | **New** — "Awaiting admin authorization" screen |
+| `mobile/src/screens/ProfileScreen.js` | Change-password available to **students** too; forgotten-password guidance |
+| `mobile/src/screens/StudentsScreen.js` | Add student by **username** (pre-authorization) |
+| `mobile/src/config.js`, `mobile/app.json`, `mobile/package.json` | Google OAuth placeholder + `@react-native-google-signin/google-signin` dependency **removed** (nothing else read them; §9.3 note) |
+| `mobile/test/identity.test.js` | **New** — 63 executed tests (normalization, collisions, identifier mapping, policy, 20k fuzz) |
+| `mobile/test/api.mock.test.js` | Extended to **37 tests** (username login with real `auth/*` codes, identical error text for unknown-user vs wrong-password, ledger identity) |
+| `tools/provision/**` | **New** — the local provisioning tool + 3 suites (plan 36, passwords 15, emulator E2E 31) |
+| `firebase/test/rules.test.js` | **89 scenarios** (14 new synthetic-identifier ones) — rules text unchanged |
+| `.github/workflows/username-login.yml` | **New** — node suites + Auth/Firestore emulator E2E job |
+| `docs/USERNAME_LOGIN.md`, `tools/provision/README.md`, `README.md`, `PRIVACY_POLICY.md`, `mobile/PLAY_STORE.md`, `SECURITY_REVIEW.md`, `firebase/README.md` | Documentation for the above |
+
+Consequences for §9/§10: the app.json OAuth placeholder and the Google sign-in
+console checklist no longer apply (kept only as history).
+
 ---
 
 ## 3. Final rules design (`firebase/firestore.rules`, v3.2)
@@ -321,6 +346,11 @@ admin-trust-root or cosmetic):
 
 ## 4. Tests — what was executed and results
 
+> **v3.0 update:** the suite grew from 75 to **89 scenarios** and five new Node
+> suites were added; the *current* results (CI runs, exact numbers) are in
+> **§11.2**, and the exact commands in §5. Everything below is the
+> security/accounting release's record, kept as history.
+
 ### 4.1 Executed in this environment (Node, real code, real results)
 
 **`mobile/test/accounting.test.js` — 31/31 PASSED**
@@ -410,19 +440,41 @@ invariants) — **75 scenarios, all passing in the latest CI run**:
 
 ### Run the tests
 ```bash
-# Accounting + app-orchestration tests (any machine with Node 18+):
+# --- v3.0 suites (any machine with Node 18+, no Java needed) ---
 cd mobile
-node test/accounting.test.js
-node test/api.mock.test.js
+node test/identity.test.js       # 63 passed, 0 failed  username ↔ identifier mapping
+node test/accounting.test.js     # 31 passed, 0 failed  paise math
+node test/api.mock.test.js       # 37 passed, 0 failed  data layer + username login
 
-# Security rules tests (needs Java 21+; throwaway local emulator, no production access):
+cd tools/provision
+node test/plan.test.js           # 36 passed, 0 failed  roster/mapping/migration plan
+node test/passwords.test.js      # 15 passed, 0 failed  CSPRNG + credentials file
+
+# --- emulator suites (need Java 21+; throwaway emulators, no production access) ---
 cd firebase
 npm ci
 firebase emulators:exec --project jkss-fund-local --only firestore "node test/rules.test.js"
+#   → 89 passed, 0 failed
+firebase emulators:exec --project jkss-fund-e2e --only firestore,auth \
+  "node ../tools/provision/test/emulator.test.js"
+#   → 31 passed, 0 failed  (real accounts created/signed-in/deleted in the emulator)
+
+# --- provisioning dry run (no credentials, prints the 24-row mapping) ---
+#   No --project/--credentials means a pure-offline plan: nothing is read from or
+#   written to Firebase; the only side effect is a local 0600 report file under
+#   tools/provision/reports/ (git-ignored).
+node tools/provision/provision.js plan
 ```
-(CI runs the same on every push — see the branch's Actions runs.)
+CI runs the same on every push: `.github/workflows/firestore-rules.yml`
+(rules suite + accounting/identity/api suites) and
+`.github/workflows/username-login.yml` (node suites + the provisioning E2E job).
+Both jobs fail unless the output ends with `N passed, 0 failed`.
 
 ### Deploy the rules (only after the test suite passes and you approve the production change)
+
+> **Not part of v3.0:** `firestore.rules` is unchanged by the username work, so
+> username login needs **no rules deploy**. The command below is for a future
+> rules change only.
 ```bash
 cd firebase
 npm i -g firebase-tools
@@ -540,11 +592,22 @@ real-money movement on the current architecture.
   correctly-IDed companion doc before the v3.5 rules go live. **Not done**
   (no production data modification without approval); exact reversible
   console steps in **§10**.
-- **Google sign-in** — not configurable from this repo: the project's
-  `google-services.json` ships with `oauth_client: []` (no OAuth clients
-  registered at all), so there are no client IDs to plug in yet. The app is
-  built to enable it automatically the moment real IDs land in
-  `mobile/src/config.js` (+ `app.json`). Exact console checklist in **§10.3**.
+- **Google sign-in** — **removed in v3.0** (students sign in with a username;
+  no student Google account is needed). The project's `google-services.json`
+  ships with `oauth_client: []`, the `@react-native-google-signin/google-signin`
+  dependency and the `app.json` client-id placeholder are gone, and no code
+  reads them. Restoring Google sign-in would mean re-adding all three (§10.3 is
+  the historical checklist).
+- **Legacy web app + API** (`backend/`, `frontend/`, `Dockerfile`, `Procfile`) —
+  the pre-Firebase Express/JWT/JSON system is still in the repo but is **not
+  maintained by v3.0** and shares nothing with Firebase. If it is still hosted,
+  its seeded `admin`/`admin123` account and hardcoded-default `JWT_SECRET`
+  should be dealt with; `DEPLOY.md` lists the exact items.
+- **Repository hygiene** — six stray tracked files at the repo root
+  (`app`, `app. jsx`, `app reactnative`, `server`, `package `, `setup guide `)
+  are snapshots of the legacy frontend/backend from earlier uploads. They are not
+  referenced by any build or test. Deleting tracked files is the owner's call, so
+  v3.0 left them in place — recommended: remove them in a small follow-up.
 - **iOS / Hosting** — out of scope per the task.
 - **`removedAt` tombstones are never un-set** — re-adding a removed student
   requires a fresh identity (or console edit). Product decision.
@@ -801,7 +864,7 @@ touching production.
   (pre-authorization, unauthorized lockout, withdrawal/credit/reversal with
   synthetic ids, no-loosening checks).
 * `tools/provision/test/emulator.test.js` — end-to-end against the Auth +
-  Firestore emulators: dry runs write nothing, 23 accounts created idempotently,
+  Firestore emulators: dry runs create no Auth user and touch no document, 23 accounts created idempotently,
   the admin account/password and both admin documents preserved, balances and
   ledgers byte-identical, **no plaintext password anywhere in Firestore**,
   valid/invalid password sign-in, an unauthorized account with no profile,

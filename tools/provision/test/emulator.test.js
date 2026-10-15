@@ -9,7 +9,7 @@
 // against a production-shaped seed (two admin documents, a legacy real-email
 // student with a balance + ledger, a former student, a job) and asserts:
 //
-//   * dry runs write nothing,
+//   * dry runs write nothing to the project,
 //   * `apply` creates 23 unique student accounts with unique random passwords,
 //   * the admin Auth account + password and BOTH admin documents are preserved
 //     (only the missing txnSeq field is added),
@@ -164,7 +164,7 @@ async function countUsers() {
 
   /* --------------------------- 1. offline plan -------------------------- */
   let planOffline;
-  await check('offline `plan` needs no credentials and writes nothing', () => {
+  await check('offline `plan` needs no credentials and creates no Auth user', () => {
     const r = run(['plan', '--roster', ROSTER]).expectCode(0);
     ok(r.stdout.includes('Internal identifier'), 'mapping table missing');
     ok(r.stdout.includes('offline'), 'should be flagged offline');

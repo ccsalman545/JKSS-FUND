@@ -76,6 +76,7 @@ command with a dry-run, idempotent reruns and a credentials file.
 
 ```bash
 node provision.js                        # dry run, offline: the 24 mappings
+                                         # (only a local 0600 report file is written)
 node provision.js plan  --project X …    # read-only plan against the project
 node provision.js apply --project X --confirm-project X --apply
 node provision.js verify-identifier --project <TEST-project> [--api-key K]
