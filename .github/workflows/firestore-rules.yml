@@ -45,7 +45,7 @@ jobs:
         run: |
           firebase emulators:exec --project jkss-fund-local --only firestore "node test/rules.test.js" \
             > rules-test-output.txt 2>&1 || true
-          echo "::error title=rules-output::captured output: $(wc -c < rules-test-output.txt 2>/dev/null || echo '?') bytes"
+          echo "::error title=rules-output::captured output: $(wc -c < rules-test-output.txt 2>/dev/null || echo '?') bytes | head: $(head -c 700 rules-test-output.txt 2>/dev/null | tr '\n' '|')"
           {
             echo '## Firestore rules test output'
             echo '```'
