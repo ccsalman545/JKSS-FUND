@@ -154,7 +154,11 @@ function jobReversalBatch(db, jobId, allocs, current, {
       console.log('  PASS  ' + name);
     } catch (e) {
       fail++;
-      console.log('  FAIL  ' + name + '\n        → ' + (e && e.message).split('\n')[0]);
+      const lines = (e && e.message).split('\n');
+      // First line is usually the gRPC code; the next carries the rule
+      // evaluation detail (e.g. which allow clause was false).
+      const detail = lines.slice(0, 3).join(' ').replace(/\s+/g, ' ').slice(0, 280);
+      console.log('  FAIL  ' + name + '\n        → ' + detail);
     }
   }
 

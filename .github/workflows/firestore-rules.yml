@@ -54,11 +54,12 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           if ! grep -qE '^[0-9]+ passed, 0 failed' rules-test-output.txt; then
             # Compact single-line annotation (newlines as '|'): summary
-            # counts + every failed scenario + the first error lines, so
-            # failures are readable without raw-log access.
-            SUMMARY=$(grep -E '^[0-9]+ passed' rules-test-output.txt | tr '\n' ' ')
-            FAILS=$(grep -E '^FAIL|FATAL|Error compiling|PERMISSION_DENIED|maximum of 1000' rules-test-output.txt | head -c 5000 | tr '\n' '|')
-            echo "::error title=rules-output::FAILED — ${SUMMARY} Failed scenarios: ${FAILS}"
+            # counts + every failed scenario (name + first error line),
+            # so failures are readable without raw-log access.
+            SUMMARY=$(grep -E '[0-9]+ passed' rules-test-output.txt | head -1)
+            FAILS=$(grep -A1 -E '^  FAIL' rules-test-output.txt | grep -vE '^\[20|^--$|^ *$' | head -c 4800 | tr '\n' '|')
+            if echo "$FAILS" | grep -q 'maximum of 1000'; then BUDGET=' [1000-expression budget exceeded]'; else BUDGET=''; fi
+            echo "::error title=rules-output::FAILED — ${SUMMARY} Failed scenarios: ${FAILS}${BUDGET}"
             exit 1
           fi
       - name: Upload full test log
