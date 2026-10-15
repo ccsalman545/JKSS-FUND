@@ -248,6 +248,7 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
+  notAuthRoot: { flex: 1 },
   lockGlass: {
     width: '100%',
     backgroundColor: 'rgba(255, 255, 255, 0.14)',

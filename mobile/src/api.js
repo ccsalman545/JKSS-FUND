@@ -64,30 +64,17 @@ export const api = {
   googleLogin: (idToken, role = 'student') =>
     auth().signInWithCredential(auth.GoogleAuthProvider.credential(idToken)),
 
-  // Create/refresh the Firestore user profile for the signed-in account.
-  // New profiles are always student / zero-balance (matching the rules);
-  // existing docs (e.g. pre-created admins) are returned as-is.
-  async ensureProfile(fbUser, role = 'student') {
+  // Resolve (READ-ONLY) the pre-authorized profile for the signed-in
+  // account. Security model: profile documents are created ONLY by the
+  // admin (Students screen) or the Firebase console — never by the
+  // signed-in user. A Google sign-in whose email has no matching
+  // users/{email} doc returns null; AuthContext then holds the session in
+  // a "not pre-authorized" state and the app never opens the student
+  // dashboard for it. (The rules enforce the same: no self-create path.)
+  async ensureProfile(fbUser) {
     const email = norm(fbUser.email);
-    const ref = userDoc(email);
-    const snap = await ref.get();
-    if (!snap.exists) {
-      if (role !== 'student') throw new Error('New profiles are created as students');
-      const data = {
-        email,
-        role: 'student',
-        full_name: fbUser.displayName || email.split('@')[0],
-        avatar: fbUser.photoURL || '',
-        balancePaise: 0,
-        balance: 0,
-        // v3.5 protocol: every new profile starts the withdrawal counter
-        // at 0 (required by the rules; legacy profiles need a one-time fix).
-        txnSeq: 0,
-        createdAt: now(),
-      };
-      await ref.set(data);
-      return profileShape(email, data);
-    }
+    const snap = await userDoc(email).get();
+    if (!snap.exists) return null;
     return profileShape(email, snap.data());
   },
 

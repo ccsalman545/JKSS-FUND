@@ -13,6 +13,9 @@ export const AuthProvider = ({ children }) => {
   const [token, setToken] = useState(null); // truthy while signed in (email)
   const [loading, setLoading] = useState(true);
   const [biometricSupported, setBiometricSupported] = useState(false);
+  // Signed in but NO pre-authorized profile doc (students must be
+  // pre-authorized by the admin; see ensureProfile).
+  const [unauthorized, setUnauthorized] = useState(false);
 
   useEffect(() => {
     // Only configure Google Sign-In with real OAuth client IDs — placeholder
@@ -37,14 +40,22 @@ export const AuthProvider = ({ children }) => {
       if (fbUser) {
         try { await api.ensureCommittee(); } catch (e) { /* ignore */ }
         try {
-          const profile = await api.ensureProfile(fbUser, 'student');
-          setUser(profile);
+          // Read-only: profiles are pre-authorized by the admin (or the
+          // console). No matching doc -> "not pre-authorized" state.
+          const profile = await api.ensureProfile(fbUser);
+          if (profile) {
+            setUser(profile);
+            setUnauthorized(false);
+          } else {
+            setUser(null);
+            setUnauthorized(true);
+          }
           setToken(fbUser.email);
         } catch (e) {
-          setUser(null); setToken(null);
+          setUser(null); setToken(null); setUnauthorized(false);
         }
       } else {
-        setUser(null); setToken(null);
+        setUser(null); setToken(null); setUnauthorized(false);
       }
       setLoading(false);
     });
@@ -85,8 +96,8 @@ export const AuthProvider = ({ children }) => {
   };
 
   const value = useMemo(
-    () => ({ token, user, loading, biometricSupported, login, googleLogin, logout, promptBiometric, updateProfile, changePassword }),
-    [token, user, loading, biometricSupported]
+    () => ({ token, user, loading, biometricSupported, unauthorized, login, googleLogin, logout, promptBiometric, updateProfile, changePassword }),
+    [token, user, loading, biometricSupported, unauthorized]
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

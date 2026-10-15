@@ -143,6 +143,11 @@ export default function StudentsScreen({ navigation }) {
           style={{ marginBottom: 8 }}
         />
         <Text style={[styles.hint, { color: theme.textFaint }]}>
+          Pre-authorizes this exact Google email: the student signs in with
+          Google and gains access only because you added it here. A sign-in
+          with any other email is not granted a profile.
+        </Text>
+        <Text style={[styles.hint, { color: theme.textFaint }]}>
           The student signs in with Google using this email. They are added to every future 90% split until removed.
         </Text>
         <Button

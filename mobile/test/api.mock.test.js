@@ -523,25 +523,37 @@ let job1Id, job2Id;
     eq(after, before, 'partial commit after failed transaction');
   });
 
-  await check('ensureProfile: new student gets student-role zero-balance doc', async () => {
+  await check('ensureProfile: NOT pre-authorized -> null, and NO doc is written', async () => {
     mock.authUser = { email: 'new@jkss.in', displayName: 'New Person', photoURL: '' };
     const p = await api.ensureProfile(mock.authUser);
-    eq(p.role, 'student');
-    eq(getDoc('users/new@jkss.in').balancePaise, 0);
-    eq(getDoc('users/new@jkss.in').role, 'student');
-    eq(getDoc('users/new@jkss.in').full_name, 'New Person');
+    eq(p, null, 'unauthorized account must resolve to null');
+    eq(getDoc('users/new@jkss.in'), null, 'no profile may be auto-created');
   });
 
-  await check('ensureProfile: existing admin doc wins (no overwrite of role/name)', async () => {
+  await check('ensureProfile: pre-authorized doc is returned as-is (read-only)', async () => {
     mock.authUser = { email: ADMIN, displayName: 'Zzz' };
     const p = await api.ensureProfile(mock.authUser);
     eq(p.role, 'admin');
     eq(getDoc('users/' + ADMIN).full_name, 'Admin');
   });
 
-  await check('ensureProfile: new non-student request rejected', async () => {
-    mock.authUser = { email: 'x@jkss.in' };
-    await assertThrowsAsync(() => api.ensureProfile(mock.authUser, 'admin'), /students/i);
+  await check('ensureProfile: existing student doc returned, fields untouched', async () => {
+    const before = JSON.stringify(getDoc('users/' + S[0]));
+    const p = await api.ensureProfile({ email: S[0] });
+    eq(p.role, 'student');
+    eq(JSON.stringify(getDoc('users/' + S[0])), before, 'profile doc must be unchanged');
+  });
+
+  await check('admin pre-authorization: addStudent creates the profile, ensureProfile then resolves', async () => {
+    eq(await api.ensureProfile({ email: 'new@jkss.in' }), null, 'not yet authorized');
+    await api.addStudent('New@Jkss.in', 'New Person'); // admin context (seed authUser)
+    const d = getDoc('users/new@jkss.in');
+    eq(d.role, 'student');
+    eq(d.balancePaise, 0);
+    eq(d.txnSeq, 0);
+    eq(d.full_name, 'New Person');
+    const p = await api.ensureProfile({ email: 'new@jkss.in' });
+    eq(p.role, 'student', 'now authorized -> resolves');
   });
 
   await check('ensureCommittee: existing non-zero balance is never zeroed', async () => {
