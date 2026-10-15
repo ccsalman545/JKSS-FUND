@@ -1,12 +1,21 @@
 // src/screens/TransactionsScreen.js
-import React, { useState, useEffect, useCallback } from 'react';
+// Full ledger: summary, filter chips, transactions grouped by month.
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { View, Text, ScrollView, RefreshControl, StyleSheet } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import { Screen, Card, Subtitle } from '../components/ui';
+import {
+  Screen, Header, Card, Chip, TxnRow, EmptyState,
+} from '../components/ui';
 import { api } from '../api';
-import { formatINR, formatDateTime } from '../utils/format';
+import { formatINR, monthLabel, asDate } from '../utils/format';
 import { palette } from '../theme';
+
+const FILTERS = [
+  { key: 'all', label: 'All' },
+  { key: 'earning', label: 'Earnings' },
+  { key: 'withdrawal', label: 'Withdrawals' },
+];
 
 export default function TransactionsScreen({ route }) {
   const { token, user } = useAuth();
@@ -14,65 +23,107 @@ export default function TransactionsScreen({ route }) {
   const studentId = route.params?.studentId; // admin-only: view a specific student
   const [txns, setTxns] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [total, setTotal] = useState(0);
+  const [filter, setFilter] = useState('all');
 
   const load = useCallback(async () => {
     let data;
     if (studentId && user?.role === 'admin') data = await api.studentTransactions(studentId);
     else data = await api.transactions();
-    setTxns(data);
-    const t = data.reduce((s, x) => s + (x.type === 'earning' ? x.amount : -x.amount), 0);
-    setTotal(t);
+    const sorted = (data || []).slice().sort((a, b) => asDate(b.createdAt) - asDate(a.createdAt));
+    setTxns(sorted);
   }, [token, studentId, user]);
 
   useEffect(() => { load(); }, [load]);
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
-  const earnings = txns.filter(t => t.type === 'earning').reduce((s, t) => s + t.amount, 0);
-  const withdrawals = txns.filter(t => t.type === 'withdrawal').reduce((s, t) => s + t.amount, 0);
+  const filtered = useMemo(
+    () => (filter === 'all' ? txns : txns.filter((t) => t.type === filter)),
+    [txns, filter]
+  );
+
+  const earnings = txns.filter((t) => t.type === 'earning').reduce((s, t) => s + Number(t.amount || 0), 0);
+  const withdrawals = txns.filter((t) => t.type === 'withdrawal').reduce((s, t) => s + Number(t.amount || 0), 0);
+  const net = earnings - withdrawals;
+
+  // Group by month label, preserving order.
+  const groups = useMemo(() => {
+    const out = [];
+    const idx = {};
+    filtered.forEach((t) => {
+      const label = monthLabel(t.createdAt);
+      if (!(label in idx)) {
+        idx[label] = out.length;
+        out.push({ label, items: [] });
+      }
+      out[idx[label]].items.push(t);
+    });
+    return out;
+  }, [filtered]);
 
   return (
     <Screen>
-      <Text style={[styles.heading, { color: theme.text }]}>Transactions</Text>
-      <View style={styles.summaryRow}>
-        <Card style={styles.summary}><Text style={{ color: palette.success, fontWeight: '800', fontSize: 16 }}>+{formatINR(earnings)}</Text><Subtitle>Earned</Subtitle></Card>
-        <Card style={styles.summary}><Text style={{ color: palette.danger, fontWeight: '800', fontSize: 16 }}>-{formatINR(withdrawals)}</Text><Subtitle>Withdrawn</Subtitle></Card>
-        <Card style={styles.summary}><Text style={{ color: theme.text, fontWeight: '800', fontSize: 16 }}>{formatINR(total)}</Text><Subtitle>Net</Subtitle></Card>
+      <Header
+        title="History"
+        subtitle={studentId && user?.role === 'admin' ? 'Student ledger' : 'Your complete ledger'}
+      />
+
+      <Card noPad style={styles.summary}>
+        {[
+          { value: '+' + formatINR(earnings), label: 'Earned', color: palette.success },
+          { value: '-' + formatINR(withdrawals), label: 'Withdrawn', color: palette.danger },
+          { value: formatINR(net), label: 'Net', color: theme.text },
+        ].map((s, i) => (
+          <View key={s.label} style={[styles.summaryCol, i > 0 && { borderLeftWidth: 1, borderColor: theme.border }]}>
+            <Text style={[styles.summaryValue, { color: s.color }]}>{s.value}</Text>
+            <Text style={[styles.summaryLabel, { color: theme.textMuted }]}>{s.label}</Text>
+          </View>
+        ))}
+      </Card>
+
+      <View style={styles.filterRow}>
+        {FILTERS.map((f) => (
+          <Chip key={f.key} label={f.label} active={filter === f.key} onPress={() => setFilter(f.key)} />
+        ))}
       </View>
 
-      <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />} style={{ flex: 1 }}>
-        {txns.length === 0 ? <Text style={[styles.empty, { color: theme.textMuted }]}>No transactions yet.</Text> : null}
-        {txns.map((t) => (
-          <Card key={t.id} style={styles.txn}>
-            <View style={styles.txnRow}>
-              <View style={[styles.txnIcon, { backgroundColor: t.type === 'earning' ? palette.success : palette.danger }]}>
-                <Text style={styles.txnIconText}>{t.type === 'earning' ? '+' : '-'}</Text>
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.txnDesc, { color: theme.text }]}>{t.description}</Text>
-                <Text style={[styles.txnDate, { color: theme.textMuted }]}>{formatDateTime(t.createdAt?.toDate ? t.createdAt.toDate() : t.createdAt)}</Text>
-              </View>
-              <Text style={[styles.txnAmt, { color: t.type === 'earning' ? palette.success : palette.danger }]}>
-                {t.type === 'earning' ? '+' : '-'}{formatINR(t.amount)}
-              </Text>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom: 110 }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={palette.primary} />}
+      >
+        {groups.length === 0 ? (
+          <EmptyState
+            icon="receipt-outline"
+            title={filter === 'all' ? 'No transactions yet' : 'Nothing here'}
+            subtitle={filter === 'all' ? 'Earnings and withdrawals will show up here in real time.' : 'Try a different filter.'}
+          />
+        ) : (
+          groups.map((g) => (
+            <View key={g.label}>
+              <Text style={[styles.monthLabel, { color: theme.textFaint }]}>{g.label}</Text>
+              {g.items.map((t, i) => (
+                <TxnRow key={t.id} txn={t} last={i === g.items.length - 1} />
+              ))}
             </View>
-          </Card>
-        ))}
+          ))
+        )}
       </ScrollView>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  heading: { fontSize: 22, fontWeight: '800', marginBottom: 12 },
-  summaryRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  summary: { width: '31%', alignItems: 'center', padding: 12 },
-  txn: { padding: 12 },
-  txnRow: { flexDirection: 'row', alignItems: 'center' },
-  txnIcon: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  txnIconText: { color: '#fff', fontWeight: '800', fontSize: 18 },
-  txnDesc: { fontSize: 14, fontWeight: '600' },
-  txnDate: { fontSize: 12, marginTop: 2 },
-  txnAmt: { fontSize: 15, fontWeight: '800' },
-  empty: { textAlign: 'center', marginTop: 24 },
+  summary: { flexDirection: 'row', marginBottom: 14, padding: 0, overflow: 'hidden' },
+  summaryCol: {
+    flex: 1, alignItems: 'center', paddingVertical: 14, paddingHorizontal: 6,
+    borderLeftWidth: 1,
+  },
+  summaryValue: { fontSize: 15.5, fontWeight: '800', letterSpacing: -0.3 },
+  summaryLabel: { fontSize: 11.5, fontWeight: '600', marginTop: 3 },
+  filterRow: { flexDirection: 'row', marginBottom: 14 },
+  monthLabel: {
+    fontSize: 12, fontWeight: '800', letterSpacing: 0.6, textTransform: 'uppercase',
+    marginBottom: 8, marginTop: 6,
+  },
 });

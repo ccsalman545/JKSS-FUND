@@ -48,10 +48,25 @@ so the build needs a (real) copy even though we use Firestore real-time instead 
 - 📡 **Real-time** balances, jobs & transactions via Firestore listeners (updates the
   instant the admin adds a job — no polling, no push server needed)
 - 🔢 Automatic **10% / 90%** fund split, atomic per job
-- 📊 **Charts** (collection trend + committee/student split)
+- 📊 **Charts** (collection trend + donut distribution + job breakdown)
 - 🌗 Light/Dark mode, 📱 biometric app lock
-- 👤 Admin: students, jobs, delete/reverse, monthly/yearly reports
-- 💸 Student: live balance, withdraw, full history
+- 👤 Admin: students (search), jobs (live split preview), delete/reverse, monthly/yearly reports
+- 💸 Student: live balance (hide/show), quick-amount withdraw, filterable history grouped by month
+
+## 🎨 UI/UX — "Aurora" design system
+
+The entire UI was redesigned around a modern fintech language (v3.1):
+
+- Indigo→violet gradient identity, amber accent, soft tonal surfaces (light + dark)
+- Gradient hero cards, glassy chips, floating rounded bottom tab bar
+- Animated bottom-sheet modals (withdraw, add student/job, change password, confirms)
+- Segmented controls, filter chips, month-grouped ledgers, split progress bars
+- Press feedback on every button, empty states, inline validation, cross-platform
+  password-change flow (no iOS-only `Alert.prompt`)
+
+Built with core React Native `Animated` + `react-native-linear-gradient` (added to
+`mobile/package.json` — a plain `npm install` picks it up). Design tokens live in
+`mobile/src/theme.js`; the component library in `mobile/src/components/ui.js`.
 
 ---
 

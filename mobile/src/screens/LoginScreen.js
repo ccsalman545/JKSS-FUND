@@ -1,10 +1,13 @@
 // src/screens/LoginScreen.js
+// Full-bleed gradient hero + floating glass form card.
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert, Image } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, SafeAreaView, Keyboard } from 'react-native';
+import { LinearGradient } from 'react-native-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import { Screen, Card, Input, Button, Title, Subtitle } from '../components/ui';
-import { palette, APP_NAME } from '../config';
+import { Button, Input } from '../components/ui';
+import { APP_NAME } from '../config';
 
 export default function LoginScreen() {
   const { login, googleLogin } = useAuth();
@@ -16,70 +19,148 @@ export default function LoginScreen() {
   const [gLoading, setGLoading] = useState(false);
 
   const onLogin = async () => {
-    setError(''); setLoading(true);
+    Keyboard.dismiss();
+    setError('');
+    setLoading(true);
     try {
       await login(username.trim(), password);
     } catch (e) {
-      setError(e.message);
-    } finally { setLoading(false); }
+      setError(e.message?.replace('Firebase: ', '') || 'Sign-in failed');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const onGoogle = async () => {
-    setError(''); setGLoading(true);
+    Keyboard.dismiss();
+    setError('');
+    setGLoading(true);
     try {
       await googleLogin('student');
     } catch (e) {
-      setError(e.message || 'Google sign-in failed');
-    } finally { setGLoading(false); }
+      setError(e.message?.replace('Firebase: ', '') || 'Google sign-in failed');
+    } finally {
+      setGLoading(false);
+    }
   };
 
   return (
-    <Screen style={styles.container}>
-      <View style={styles.header}>
-        <View style={[styles.logo, { backgroundColor: palette.primary }]}>
-          <Text style={styles.logoText}>₹</Text>
-        </View>
-        <Title style={styles.appName}>{APP_NAME}</Title>
-        <Subtitle>Hostel Fund Management</Subtitle>
-      </View>
+    <LinearGradient colors={theme.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.root}>
+      <SafeAreaView style={{ flex: 1 }}>
+        <View style={styles.deco1} />
+        <View style={styles.deco2} />
 
-      <Card>
-        <Button
-          label={gLoading ? 'Signing in…' : 'Continue with Google'}
-          variant="outline"
-          loading={gLoading}
-          onPress={onGoogle}
-          style={styles.google}
-        />
-        <View style={styles.dividerRow}>
-          <View style={[styles.line, { backgroundColor: theme.border }]} />
-          <Text style={[styles.dividerText, { color: theme.textMuted }]}>OR</Text>
-          <View style={[styles.line, { backgroundColor: theme.border }]} />
-        </View>
+        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+          <View style={styles.brand}>
+            <View style={styles.logo}>
+              <Text style={styles.logoRupee}>₹</Text>
+            </View>
+            <Text style={styles.appName}>{APP_NAME}</Text>
+            <Text style={styles.tagline}>Hostel fund, made transparent</Text>
+          </View>
 
-        <Input placeholder="Username" value={username} onChangeText={setUsername} autoCapitalize="none" />
-        <Input placeholder="Password" value={password} onChangeText={setPassword} secure />
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-        <Button label={loading ? 'Please wait…' : 'Login'} loading={loading} onPress={onLogin} />
-      </Card>
+          <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.mode === 'light' ? 'transparent' : theme.border }]}>
+            <Text style={[styles.cardTitle, { color: theme.text }]}>Sign in</Text>
+            <Text style={[styles.cardSub, { color: theme.textMuted }]}>
+              Students use Google · Admins use their credentials
+            </Text>
 
-      <Text style={[styles.footer, { color: theme.textMuted }]}>
-        Students: use Google or your given credentials.{'\n'}Admins: use the password provided by the system owner.
-      </Text>
-    </Screen>
+            <Button
+              label={gLoading ? 'Signing in…' : 'Continue with Google'}
+              variant="outline"
+              icon="logo-google"
+              loading={gLoading}
+              onPress={onGoogle}
+              size="lg"
+              style={styles.googleBtn}
+            />
+
+            <View style={[styles.dividerRow, { borderColor: theme.border }]}>
+              <View style={{ flex: 1 }} />
+              <Text style={[styles.dividerText, { color: theme.textFaint }]}>OR</Text>
+              <View style={{ flex: 1 }} />
+            </View>
+
+            <Input
+              icon="mail-outline"
+              placeholder="Email or username"
+              autoCapitalize="none"
+              autoComplete="email"
+              value={username}
+              onChangeText={(t) => { setUsername(t); setError(''); }}
+            />
+            <Input
+              icon="lock-closed-outline"
+              placeholder="Password"
+              secure
+              value={password}
+              onChangeText={(t) => { setPassword(t); setError(''); }}
+            />
+
+            {error ? (
+              <View style={[styles.errorBox, { backgroundColor: theme.mode === 'dark' ? 'rgba(244,63,94,0.12)' : '#FDE9ED' }]}>
+                <Ionicons name="alert-circle-outline" size={15} color="#F43F5E" />
+                <Text style={[styles.errorText, { color: theme.mode === 'dark' ? '#FB7185' : '#E11D48' }]}>{error}</Text>
+              </View>
+            ) : null}
+
+            <Button label={loading ? 'Signing in…' : 'Login'} loading={loading} onPress={onLogin} size="lg" icon="log-in-outline" />
+          </View>
+
+          <Text style={styles.footer}>
+            10% of every job goes to the committee fund,{'\n'}90% is split equally among students.
+          </Text>
+        </ScrollView>
+      </SafeAreaView>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { justifyContent: 'center' },
-  header: { alignItems: 'center', marginBottom: 24 },
-  logo: { width: 72, height: 72, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
-  logoText: { color: '#fff', fontSize: 36, fontWeight: '800' },
-  appName: { fontSize: 28, textAlign: 'center' },
-  google: { flexDirection: 'row', justifyContent: 'center' },
-  dividerRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 12 },
-  line: { flex: 1, height: 1 },
-  dividerText: { marginHorizontal: 10, fontSize: 12 },
-  error: { color: palette.danger, marginBottom: 8, fontSize: 13 },
-  footer: { textAlign: 'center', fontSize: 12, marginTop: 8, lineHeight: 18 },
+  root: { flex: 1 },
+  deco1: {
+    position: 'absolute', top: -100, right: -70, width: 260, height: 260,
+    borderRadius: 130, backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  deco2: {
+    position: 'absolute', top: 160, left: -110, width: 240, height: 240,
+    borderRadius: 120, backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  scroll: { flexGrow: 1, padding: 24, paddingBottom: 40 },
+  brand: { alignItems: 'center', marginBottom: 30, marginTop: 8 },
+  logo: {
+    width: 76, height: 76, borderRadius: 26,
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    borderColor: 'rgba(255,255,255,0.35)',
+    borderWidth: 1.5,
+    alignItems: 'center', justifyContent: 'center',
+    marginBottom: 16,
+  },
+  logoRupee: { color: '#fff', fontSize: 38, fontWeight: '800' },
+  appName: { color: '#fff', fontSize: 30, fontWeight: '800', letterSpacing: -0.5 },
+  tagline: { color: 'rgba(255,255,255,0.8)', fontSize: 14, marginTop: 6, fontWeight: '500' },
+  card: {
+    borderRadius: 28,
+    padding: 22,
+    borderWidth: 1,
+    shadowColor: 'rgba(0, 0, 0, 0.25)',
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 1,
+    shadowRadius: 30,
+    elevation: 12,
+  },
+  cardTitle: { fontSize: 20, fontWeight: '800', letterSpacing: -0.3 },
+  cardSub: { fontSize: 12.5, marginTop: 4, marginBottom: 18, lineHeight: 18 },
+  googleBtn: { marginBottom: 16 },
+  dividerRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 14, borderTopWidth: 0 },
+  dividerText: { fontSize: 11, fontWeight: '800', letterSpacing: 1 },
+  errorBox: {
+    flexDirection: 'row', alignItems: 'center',
+    borderRadius: 12, padding: 11, marginBottom: 12, gap: 8,
+  },
+  errorText: { flex: 1, fontSize: 12.5, fontWeight: '600', lineHeight: 17 },
+  footer: {
+    color: 'rgba(255,255,255,0.75)', fontSize: 12, textAlign: 'center',
+    marginTop: 22, lineHeight: 19, fontWeight: '500',
+  },
 });

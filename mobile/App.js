@@ -1,15 +1,20 @@
 // mobile/App.js
+// Root navigation: splash → login → role-based tabs (student / admin).
 import React, { useEffect, useState } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, Pressable } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'react-native-linear-gradient';
 
 import { ThemeProvider, useTheme } from './src/context/ThemeContext';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
-import { palette } from './src/theme';
+import { palette, radius } from './src/theme';
+import { APP_NAME } from './src/config';
+import { Button } from './src/components/ui';
 
 import SplashScreen from './src/screens/SplashScreen';
 import LoginScreen from './src/screens/LoginScreen';
@@ -24,18 +29,52 @@ import ProfileScreen from './src/screens/ProfileScreen';
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
 
-function TabIcon({ route, color, size }) {
-  const map = {
-    Home: 'home', History: 'list', Profile: 'person',
-    Dashboard: 'grid', Students: 'people', Jobs: 'briefcase', Reports: 'bar-chart',
-  };
-  return <Ionicons name={map[route.name] || 'ellipsis'} size={size} color={color} />;
+const TAB_ICONS = {
+  Home: ['home', 'home-outline'],
+  History: ['receipt', 'receipt-outline'],
+  Profile: ['person', 'person-outline'],
+  Dashboard: ['grid', 'grid-outline'],
+  Students: ['people', 'people-outline'],
+  Jobs: ['briefcase', 'briefcase-outline'],
+  Reports: ['bar-chart', 'bar-chart-outline'],
+};
+
+const TabIcon = ({ route, focused, color }) => {
+  const [solid, outline] = TAB_ICONS[route.name] || ['ellipse', 'ellipse-outline'];
+  return <Ionicons name={focused ? solid : outline} size={22} color={color} />;
+};
+
+function useTabOptions() {
+  const { theme } = useTheme();
+  return ({ route }) => ({
+    headerShown: false,
+    tabBarIcon: ({ color }) => <TabIcon route={route} focused={color === palette.primary} color={color} />,
+    tabBarActiveTintColor: palette.primary,
+    tabBarInactiveTintColor: theme.textFaint,
+    tabBarLabelStyle: { fontSize: 10.5, fontWeight: '700', letterSpacing: 0.3 },
+    tabBarStyle: {
+      position: 'absolute',
+      left: 12,
+      right: 12,
+      bottom: 10,
+      height: 60,
+      borderTopLeftRadius: 22,
+      borderTopRightRadius: 22,
+      backgroundColor: theme.tabBar,
+      borderTopWidth: 0,
+      elevation: 14,
+      shadowColor: '#0F172A',
+      shadowOffset: { width: 0, height: -4 },
+      shadowOpacity: theme.mode === 'dark' ? 0.5 : 0.16,
+      shadowRadius: 18,
+    },
+  });
 }
 
 function StudentTabs() {
+  const options = useTabOptions();
   return (
-    <Tab.Navigator screenOptions={({ route }) => ({ tabBarIcon: ({ color, size }) => <TabIcon route={route} color={color} size={size} /> })}
-      screenOptions={{ headerShown: false, tabBarActiveTintColor: palette.primary }}>
+    <Tab.Navigator screenOptions={options}>
       <Tab.Screen name="Home" component={StudentDashboard} />
       <Tab.Screen name="History" component={TransactionsScreen} />
       <Tab.Screen name="Profile" component={ProfileScreen} />
@@ -44,9 +83,9 @@ function StudentTabs() {
 }
 
 function AdminTabs() {
+  const options = useTabOptions();
   return (
-    <Tab.Navigator screenOptions={({ route }) => ({ tabBarIcon: ({ color, size }) => <TabIcon route={route} color={color} size={size} /> })}
-      screenOptions={{ headerShown: false, tabBarActiveTintColor: palette.primary }}>
+    <Tab.Navigator screenOptions={options}>
       <Tab.Screen name="Dashboard" component={AdminDashboard} />
       <Tab.Screen name="Students" component={StudentsScreen} />
       <Tab.Screen name="Jobs" component={JobsScreen} />
@@ -64,47 +103,76 @@ function BiometricGate({ children }) {
   useEffect(() => {
     if (user && biometricSupported) {
       setLocked(true);
-      promptBiometric().then((ok) => { if (!ok) setLocked(true); else setLocked(false); });
+      promptBiometric().then((ok) => setLocked(!ok));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (!locked) return children;
+
   return (
-    <View style={[styles.lock, { backgroundColor: theme.background }]}>
-      <View style={[styles.lockCard, { backgroundColor: theme.surface }]}>
-        <Text style={[styles.lockTitle, { color: theme.text }]}>🔒 App Locked</Text>
-        <Text style={[styles.lockSub, { color: theme.textMuted }]}>Authenticate to continue</Text>
-        <TouchableOpacity style={[styles.lockBtn, { backgroundColor: palette.primary }]} onPress={async () => {
-          const ok = await promptBiometric();
-          if (ok) setLocked(false);
-        }}>
-          <Text style={styles.lockBtnText}>Unlock with Biometrics</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
+    <LinearGradient colors={theme.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.lockWrap}>
+      <SafeAreaView style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 28 }}>
+        <View style={styles.lockGlass}>
+          <View style={styles.lockIconWrap}>
+            <Ionicons name="finger-print" size={34} color="#fff" />
+          </View>
+          <Text style={styles.lockTitle}>App locked</Text>
+          <Text style={styles.lockSub}>Authenticate to open {APP_NAME}</Text>
+          <Pressable
+            style={({ pressed }) => [styles.lockBtn, pressed && { opacity: 0.85 }]}
+            onPress={async () => {
+              const ok = await promptBiometric();
+              if (ok) setLocked(false);
+            }}
+          >
+            <View style={styles.lockBtnInner}>
+              <Ionicons name="unlock-outline" size={17} color={palette.primaryDark} />
+              <Text style={styles.lockBtnText}>Unlock</Text>
+            </View>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    </LinearGradient>
   );
 }
 
 function Root() {
-  const { user, loading, logout } = useAuth();
+  const { user, loading } = useAuth();
   const { theme } = useTheme();
 
   if (loading) return <SplashScreen />;
   if (!user) {
     return (
-      <Stack.Navigator screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="Login" component={LoginScreen} />
-      </Stack.Navigator>
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
+        <Stack.Navigator screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="Login" component={LoginScreen} />
+        </Stack.Navigator>
+      </View>
     );
   }
   return (
-    <BiometricGate>
-      <Stack.Navigator screenOptions={{ headerShown: false }}>
-        {user.role === 'admin'
-          ? <Stack.Screen name="Admin" component={AdminTabs} />
-          : <Stack.Screen name="Student" component={StudentTabs} />}
-      </Stack.Navigator>
-    </BiometricGate>
+    <View style={{ flex: 1, backgroundColor: theme.background }}>
+      <BiometricGate>
+        <Stack.Navigator screenOptions={{ headerShown: false }}>
+          {user.role === 'admin' ? (
+            <Stack.Screen name="Admin" component={AdminTabs} />
+          ) : (
+            <Stack.Screen name="Student" component={StudentTabs} />
+          )}
+        </Stack.Navigator>
+      </BiometricGate>
+    </View>
+  );
+}
+
+function Shell() {
+  const { isDark } = useTheme();
+  return (
+    <NavigationContainer>
+      <StatusBar style={isDark ? 'light' : 'dark'} />
+      <Root />
+    </NavigationContainer>
   );
 }
 
@@ -112,20 +180,33 @@ export default function App() {
   return (
     <ThemeProvider>
       <AuthProvider>
-        <NavigationContainer>
-          <StatusBar style="auto" />
-          <Root />
-        </NavigationContainer>
+        <Shell />
       </AuthProvider>
     </ThemeProvider>
   );
 }
 
 const styles = StyleSheet.create({
-  lock: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
-  lockCard: { width: '100%', borderRadius: 20, padding: 28, alignItems: 'center', elevation: 4 },
-  lockTitle: { fontSize: 22, fontWeight: '800' },
-  lockSub: { fontSize: 14, marginVertical: 8 },
-  lockBtn: { paddingVertical: 14, paddingHorizontal: 24, borderRadius: 12, marginTop: 12 },
-  lockBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  lockWrap: { flex: 1 },
+  lockGlass: {
+    width: '100%',
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    borderColor: 'rgba(255, 255, 255, 0.28)',
+    borderWidth: 1,
+    borderRadius: radius.xl,
+    padding: 30,
+    alignItems: 'center',
+    backdropFilter: 'blur(10px)',
+  },
+  lockIconWrap: {
+    width: 64, height: 64, borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+    alignItems: 'center', justifyContent: 'center',
+    marginBottom: 16,
+  },
+  lockTitle: { color: '#fff', fontSize: 22, fontWeight: '800', letterSpacing: -0.3 },
+  lockSub: { color: 'rgba(255,255,255,0.75)', fontSize: 13.5, marginTop: 6, textAlign: 'center' },
+  lockBtn: { marginTop: 20, backgroundColor: '#fff', borderRadius: radius.md, paddingVertical: 4, paddingHorizontal: 6 },
+  lockBtnInner: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 26 },
+  lockBtnText: { color: palette.primaryDark, fontWeight: '800', fontSize: 15, marginLeft: 8 },
 });
