@@ -37,16 +37,20 @@ jobs:
       - name: Run rules tests in the Firestore emulator
         working-directory: firebase
         run: |
-          set -o pipefail
-          firebase emulators:exec --only firestore "node test/rules.test.js" 2>&1 | tee rules-test-output.txt
-          # Publish the full output in the job summary so failures are
-          # visible without downloading raw logs.
+          # Capture everything (steps run under bash -e, so survive failure
+          # with `|| true` and re-fail explicitly after reporting).
+          firebase emulators:exec --only firestore "node test/rules.test.js" \
+            > rules-test-output.txt 2>&1 || true
           {
             echo '## Firestore rules test output'
             echo '```'
             cat rules-test-output.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          if ! grep -qE '^[0-9]+ passed, 0 failed' rules-test-output.txt; then
+            echo "::error::Rules test suite failed or did not complete"
+            exit 1
+          fi
 
   accounting:
     name: Accounting + api orchestration tests
