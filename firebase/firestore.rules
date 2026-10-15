@@ -25,7 +25,7 @@ service cloud.firestore {
           || (k == 'e2' && (get(/databases/$(database)/documents/meta/committee) is int))
           || (k == 'e3' && (get(/databases/$(database)/documents/meta/committee) is string))
           || (k == 'e4' && (get(/databases/$(database)/documents/meta/committee) is bool))
-          || (k == 'e5' && (get(/databases/$(database)/documents/meta/committee) is null))
+          || (k == 'e5' && (get(/databases/$(database)/documents/meta/committee) == null))
           || (k == 'e6' && (get(/databases/$(database)/documents/meta/committee) != null))
           || (k == 'e7' && (get(/databases/$(database)/documents/meta/committee).data.balancePaise is int))
           || (k == 'e8' && (get(/databases/$(database)/documents/meta/committee).balancePaise is int))

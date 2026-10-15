@@ -59,7 +59,9 @@ jobs:
             SUMMARY=$(grep -E '[0-9]+ passed' rules-test-output.txt | head -1)
             FAILS=$(grep -A1 -E '^  FAIL' rules-test-output.txt | grep -vE '^\[20|^--$|^ *$' | head -c 4800 | tr '\n' '|')
             if echo "$FAILS" | grep -q 'maximum of 1000'; then BUDGET=' [1000-expression budget exceeded]'; else BUDGET=''; fi
+            TAIL=$(tail -c 4500 rules-test-output.txt | tr '\n' '|')
             echo "::error title=rules-output::FAILED — ${SUMMARY} Failed scenarios: ${FAILS}${BUDGET}"
+            echo "::error title=rules-raw-tail::RAW OUTPUT TAIL: ${TAIL}"
             exit 1
           fi
       - name: Upload full test log
