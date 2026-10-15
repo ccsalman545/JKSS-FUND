@@ -13,6 +13,18 @@ The app no longer uses a custom server. All auth, data, and rules live in Fireba
 1. **Project settings → Your apps → Android**, package name `com.jkssfund.app`.
 2. Download `google-services.json` and overwrite `../mobile/google-services.json`.
    (iOS: add `GoogleService-Info.plist` to the iOS target.)
+   > ✅ Done — `mobile/google-services.json` holds the real config for the
+   > **`jkss-fund`** Firebase project.
+
+> **Gradle note (Firebase console "Add Firebase SDK" instructions):** the guide
+> tells you to add the `com.google.gms.google-services` Gradle plugin and the
+> Firebase BoM (`com.google.firebase:firebase-bom`) to your `build.gradle.kts`
+> files. In this Expo project that is **handled automatically**: the
+> `@react-native-firebase/app` config plugin listed under `app.json` → `plugins`
+> registers the Google Services Gradle plugin during prebuild, and the Firebase
+> SDKs are installed from npm (`@react-native-firebase/app`, `/auth`, `/firestore`
+> in `mobile/package.json`) rather than as Gradle BoM dependencies. Only run the
+> manual Gradle steps if you leave Expo and build a raw native Android app.
 
 ## 3. Deploy rules + indexes
 ```bash

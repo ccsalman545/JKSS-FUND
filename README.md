@@ -18,7 +18,7 @@ JKSS-FUND/
 │   ├── App.js              # Navigation + biometric lock
 │   ├── app.json            # Expo/EAS config + @react-native-firebase plugin
 │   ├── eas.json            # Build profiles (APK + Play Store AAB)
-│   ├── google-services.json# ⚠️ REPLACE with your real Firebase config
+│   ├── google-services.json# Firebase config (jkss-fund project — filled)
 │   ├── credentials.json    # Signing keystore scaffold (Play Store)
 │   ├── PLAY_STORE.md       # Release walkthrough
 │   ├── assets/             # splash / icon
@@ -39,6 +39,15 @@ JKSS-FUND/
 
 **Why `google-services.json`?** The native Firebase SDK reads it to initialize on Android,
 so the build needs a (real) copy even though we use Firestore real-time instead of FCM.
+
+> **About Firebase's Android Gradle instructions** (Google Services Gradle plugin +
+> Firebase BoM in `build.gradle.kts`): this repo is an **Expo** project, so that step is
+> done for you automatically — the `@react-native-firebase/app` config plugin
+> (`app.json` → `plugins`) adds the `com.google.gms.google-services` Gradle plugin at
+> prebuild time, and the Firebase SDKs come from npm (`@react-native-firebase/*` in
+> `mobile/package.json`) instead of Gradle BoM dependencies. No manual Gradle edits are
+> needed for `eas build` or `expo run:android`; those instructions only apply to
+> non-Expo (native) Android projects.
 
 ---
 
@@ -134,7 +143,7 @@ Adding a job of ₹1000 with 10 students (atomic Firestore batch):
 ---
 
 ## ✅ Pre-launch checklist
-- [ ] `mobile/google-services.json` replaced with real Firebase config
+- [x] `mobile/google-services.json` replaced with real Firebase config (project `jkss-fund`)
 - [ ] Firebase Auth (Google + Email/Password) enabled
 - [ ] Firestore rules + indexes deployed
 - [ ] First admin `role` set to `admin` in Firestore
