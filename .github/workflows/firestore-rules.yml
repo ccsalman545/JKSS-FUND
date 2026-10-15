@@ -52,6 +52,18 @@ jobs:
             exit 1
           fi
 
+      - name: Post failure output as commit comment
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Firestore rules test run failed. Captured output (tail):"
+            echo '```'
+            tail -c 5000 firebase/rules-test-output.txt 2>/dev/null || echo "(no output captured)"
+            echo '```'
+          } | gh api repos/${{ github.repository }}/commits/${{ github.sha }}/comments -f body=@-
+
   accounting:
     name: Accounting + api orchestration tests
     runs-on: ubuntu-latest
