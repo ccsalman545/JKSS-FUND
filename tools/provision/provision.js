@@ -44,6 +44,7 @@ const fb = require('./lib/firebase');
 const planLib = require('./lib/plan');
 const { generateTemporaryPassword } = require('./lib/passwords');
 const sharedPw = require('./lib/shared-password');
+const testModeLib = require('./lib/test-mode');
 const report = require('./lib/report');
 
 const HERE = __dirname;
@@ -74,6 +75,7 @@ const KNOWN_FLAGS = {
   '--allow-production-check': 'bool',
   '--shared-password-file': 'value',
   '--allow-unrostered': 'bool',
+  '--test-mode-shared-password': 'bool',
   '--keep': 'bool',
   '--quiet': 'bool',
   '--help': 'bool',
@@ -135,6 +137,9 @@ function usage() {
     "  --name <full name>         migrate-identity: display name for the migrated profile",
     '  --shared-password-file <f> apply: OPT-IN owner-supplied shared initial password for NEW accounts only',
     '                             (one line, mode 0600, outside the repo or git-ignored; see docs/USERNAME_LOGIN.md)',
+    '  --test-mode-shared-password  apply: TEST ONLY. With --shared-password-file, skip the length (6 minimum)',
+    '                             and roster-name checks. Requires BOTH emulators (loopback), a test project',
+    '                             id, and never jkss-fund. Refused otherwise (docs/USERNAME_LOGIN.md §4.6).',
     '  --allow-unrostered         apply: proceed although synthetic identities exist that are NOT on the roster',
     '                             (they are then left untouched; without this flag apply refuses to write)',
     '  --allow-production-check   verify-identifier: allow --project jkss-fund itself (read-only)',
@@ -232,12 +237,35 @@ async function cmdApply(flags) {
   const { roster, file: rosterFile } = loadRoster(flags['--roster']);
   if (!flags['--project']) throw new Error('apply needs --project <firebase-project-id>');
 
+  // TEST MODE (emulators only, never jkss-fund): the gate runs BEFORE the
+  // password file is read. It refuses unless both emulators answer.
+  const testMode = !!flags['--test-mode-shared-password'];
+  if (testMode && !flags['--shared-password-file']) {
+    throw new Error('--test-mode-shared-password needs --shared-password-file');
+  }
+  let testVerified = null;
+  if (testMode) {
+    testVerified = await testModeLib.assertTestModeAllowed({
+      project: flags['--project'],
+      env: process.env,
+      probe: (o) => testModeLib.probeEmulators(o),
+    });
+  }
+
   // Opt-in shared initial password: the file is validated BEFORE any project
   // access, so a bad file fails fast and writes nothing. The password is never
   // printed or logged; it is used only for accounts created by this run.
   let shared = null;
   if (flags['--shared-password-file']) {
-    shared = sharedPw.readSharedPasswordFile(flags['--shared-password-file'], { students: roster, repoRoot: REPO_ROOT });
+    shared = sharedPw.readSharedPasswordFile(flags['--shared-password-file'], {
+      students: roster, repoRoot: REPO_ROOT, testMode,
+    });
+  }
+  if (testMode && !flags['--json']) {
+    console.log('!! TEST MODE — emulators verified (auth ' + testVerified.authHost + ', firestore ' +
+      testVerified.firestoreHost + '), project ' + testVerified.project + '.');
+    console.log('   The shared password length and roster-name checks are bypassed for THIS run only.');
+    console.log('   This is not production. The password is never printed or stored.\n');
   }
 
   if (!dryRun) requireLiveGate({ flags });
@@ -402,7 +430,7 @@ async function cmdApply(flags) {
       credentialsFile: writtenCredentials,
       dryRun,
       passwordsShown: flags['--show-passwords'] ? passwordsShown : null,
-      passwordMode: shared ? 'shared' : 'random',
+      passwordMode: shared ? (testMode ? 'shared-test' : 'shared') : 'random',
     }));
     if (writtenCredentials && !shared && !flags['--show-passwords']) {
       console.log('\nPasswords were written ONLY to the credentials file above (mode 0600).');
@@ -653,6 +681,9 @@ async function main() {
   if (flags['--help'] || args.command === 'help') {
     console.log(usage());
     return 0;
+  }
+  if (flags['--test-mode-shared-password'] && args.command !== 'apply') {
+    throw new Error('--test-mode-shared-password is only valid with the apply command');
   }
   switch (args.command) {
     case 'plan': return cmdPlan(flags);

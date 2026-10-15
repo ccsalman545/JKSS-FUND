@@ -1030,3 +1030,7 @@ touching production.
    app does not enforce a first-login change.** The advice in the app is not a gate, and
    nothing stops a student from keeping the shared password. Enforcing the change would
    need a profile flag and a Firestore rules change; neither exists.
+   **TEST MODE** (`--test-mode-shared-password`, emulator-only): relaxes only the length floor
+   (6 characters, the Firebase Auth minimum) and the roster-name check. It is refused for
+   `jkss-fund`, unless both the Auth and Firestore emulators are active and the probe succeeds.
+   It is never accepted for the live project, and every other password rule still applies.

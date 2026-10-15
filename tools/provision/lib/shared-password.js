@@ -31,6 +31,8 @@ const { spawnSync } = require('child_process');
 const identity = require('../../../mobile/src/identity.js');
 
 const SHARED_MIN_LENGTH = 12;
+// TEST MODE ONLY (lib/test-mode.js): Firebase Auth's own floor is 6 characters.
+const SHARED_TEST_MIN_LENGTH = 6;
 const SHARED_MAX_LENGTH = 128;
 const MAX_FILE_BYTES = 1024;
 
@@ -39,10 +41,14 @@ function nameTokens(name) {
 }
 
 // Returns { ok: true } or { ok: false, reason } — `reason` never echoes the password.
-function validateSharedPassword(password, { students = [] } = {}) {
+// testMode = true relaxes ONLY the minimum length (to SHARED_TEST_MIN_LENGTH) and
+// skips the roster name/username check. Printable-ASCII, single-line, the app
+// policy, the 6-distinct-character rule and the maximum length still apply.
+function validateSharedPassword(password, { students = [], testMode = false } = {}) {
   if (typeof password !== 'string') return { ok: false, reason: 'password must be text' };
-  if (password.length < SHARED_MIN_LENGTH) {
-    return { ok: false, reason: 'password must be at least ' + SHARED_MIN_LENGTH + ' characters' };
+  const minLength = testMode ? SHARED_TEST_MIN_LENGTH : SHARED_MIN_LENGTH;
+  if (password.length < minLength) {
+    return { ok: false, reason: 'password must be at least ' + minLength + ' characters' };
   }
   if (password.length > SHARED_MAX_LENGTH) {
     return { ok: false, reason: 'password must be at most ' + SHARED_MAX_LENGTH + ' characters' };
@@ -54,6 +60,7 @@ function validateSharedPassword(password, { students = [] } = {}) {
   if (!policy.ok) return { ok: false, reason: 'password does not meet the app policy: ' + policy.reason };
   if (new Set(password).size < 6) return { ok: false, reason: 'password must use at least 6 different characters' };
 
+  if (testMode) return { ok: true };
   for (const s of students) {
     const pieces = [s.username, s.name].concat(nameTokens(s.name));
     for (const piece of pieces) {
@@ -82,7 +89,7 @@ function isGitIgnored(file, repoRoot) {
 // Reads and validates the shared-password file. Throws an Error with a
 // human-readable reason on any problem. On success returns
 // { password, file, length } — the caller must not print `password`.
-function readSharedPasswordFile(file, { students = [], repoRoot = null } = {}) {
+function readSharedPasswordFile(file, { students = [], repoRoot = null, testMode = false } = {}) {
   if (!file || typeof file !== 'string') throw new Error('--shared-password-file needs a path');
   const abs = path.resolve(file.startsWith('~/') ? path.join(require('os').homedir(), file.slice(2)) : file);
 
@@ -112,15 +119,16 @@ function readSharedPasswordFile(file, { students = [], repoRoot = null } = {}) {
   if (raw.length === 0) throw new Error('shared password file is empty');
   if (/[\r\n]/.test(raw)) throw new Error('shared password file must contain exactly one line');
 
-  const check = validateSharedPassword(raw, { students });
+  const check = validateSharedPassword(raw, { students, testMode });
   if (!check.ok) throw new Error('shared password rejected: ' + check.reason);
-  return { password: raw, file: abs, length: raw.length };
+  return { password: raw, file: abs, length: raw.length, testMode: !!testMode };
 }
 
 module.exports = {
   readSharedPasswordFile,
   validateSharedPassword,
   SHARED_MIN_LENGTH,
+  SHARED_TEST_MIN_LENGTH,
   SHARED_MAX_LENGTH,
   _internals: { nameTokens, isInside },
 };

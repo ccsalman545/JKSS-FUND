@@ -80,6 +80,7 @@ node provision.js                        # dry run, offline: the 24 mappings
 node provision.js plan  --project X …    # read-only plan against the project
 node provision.js apply --project X --confirm-project X --apply
 node provision.js apply --project X --shared-password-file ~/jkss-secrets/shared-initial-password.txt   # opt-in shared mode, dry run
+node provision.js apply --project jkss-fund-e2e --shared-password-file <file> --test-mode-shared-password   # TEST MODE: emulators only, never jkss-fund
 node provision.js verify-identifier --project <TEST-project> [--api-key K]
 node provision.js reset-password --username sayyid.zain --project X --apply
 node provision.js migrate-identity --legacy old@mail.com --username salman --apply …
@@ -95,6 +96,7 @@ runbook, the migration options, and the manual deployment checklist.
 * Reset or overwrite an existing password (reruns are idempotent; resets are an
   explicit `reset-password`, which always uses a random password, even when the
   shared initial password mode is used for new accounts).
+* Accept a short or roster-named password, except in TEST MODE: `--test-mode-shared-password` is accepted only when both emulators are active, the project is not `jkss-fund`, and the emulator probe succeeds (`docs/USERNAME_LOGIN.md` §4.6).
 * Use a shared password unless you opt in with `--shared-password-file` (one owner-supplied
   line, mode 0600, outside the repo; validation rules and the setup in
   `docs/USERNAME_LOGIN.md` §4.6). The tool never prints or stores that password, and the

@@ -144,9 +144,11 @@ function renderApplyResult({ project, created, skipped, backfills, credentialsFi
   lines.push('txnSeq:0 backfills written ....... ' + backfills.applied);
   lines.push('students HELD (review/migration) . ' + skipped.held);
   lines.push('passwords reset .................. 0 (reruns never reset passwords)');
-  lines.push('password mode .................... ' + (passwordMode === 'shared'
-    ? 'owner shared initial password for NEW accounts (not printed or stored)'
-    : 'unique random password per NEW account'));
+  lines.push('password mode .................... ' + (passwordMode === 'shared-test'
+    ? 'owner shared initial password for NEW accounts, TEST MODE (emulators only; not printed or stored)'
+    : passwordMode === 'shared'
+      ? 'owner shared initial password for NEW accounts (not printed or stored)'
+      : 'unique random password per NEW account'));
   lines.push('');
   if (credentialsFile) lines.push('credentials file: ' + credentialsFile + ' (mode 0600, git-ignored)');
   if (passwordsShown && passwordsShown.length) {

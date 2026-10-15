@@ -13,6 +13,7 @@ const os = require('os');
 const path = require('path');
 
 const fb = require('../lib/firebase');
+const testModeLib = require('../lib/test-mode');
 const provision = require('../provision');
 
 let pass = 0;
@@ -43,7 +44,8 @@ const LIVE = {
 // Runs `apply` (or a dry run) against the stub. Returns what was written.
 // opts.secret = { content, mode } writes an owner password file in the temp dir.
 async function runApply(roster, opts = {}) {
-  const { live = LIVE, extra = [], apply = true, secret = null } = opts;
+  const { live = LIVE, extra = [], apply = true, secret = null, project = 'jkss-fund-apply-stub', env = null, probe = null } = opts;
+  const probeCalls = { n: 0 };
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'jkss-apply-'));
   const rosterFile = path.join(tmp, 'roster.json');
   fs.writeFileSync(rosterFile, JSON.stringify(roster));
@@ -58,6 +60,13 @@ async function runApply(roster, opts = {}) {
     fs.writeFileSync(secretFile, secret.content, { mode: 0o600 });
     fs.chmodSync(secretFile, secret.mode == null ? 0o600 : secret.mode);
   }
+
+  const originalProbe = testModeLib.probeEmulators;
+  const savedEnv = {};
+  if (env) {
+    for (const k of Object.keys(env)) { savedEnv[k] = process.env[k]; if (env[k] == null) delete process.env[k]; else process.env[k] = env[k]; }
+  }
+  testModeLib.probeEmulators = async (o) => { probeCalls.n++; return probe ? probe(o) : originalProbe(o); };
 
   const originals = {
     initAdmin: fb.initAdmin,
@@ -85,8 +94,7 @@ async function runApply(roster, opts = {}) {
     fb.createProfile = async ({ identifier }) => { writes.profilesCreated.push(identifier); return { created: true }; };
     fb.backfillTxnSeq = async ({ ids }) => { writes.backfillIds = ids.slice(); return ids.map((id) => ({ id, set: true })); };
 
-    const project = 'jkss-fund-apply-stub';
-    const args = ['node', 'provision.js', 'apply'];
+    const args = ['node', 'provision.js', opts.command || 'apply'];
     if (apply) args.push('--apply');
     args.push('--project', project, '--confirm-project', project, '--roster', rosterFile,
       '--credentials-file', path.join(tmp, 'credentials.json'), '--out', path.join(tmp, 'reports'), '--quiet');
@@ -110,9 +118,12 @@ async function runApply(roster, opts = {}) {
     process.stdout.write = out;
     process.argv = argv;
     Object.assign(fb, originals);
+    testModeLib.probeEmulators = originalProbe;
+    for (const k of Object.keys(savedEnv)) { if (savedEnv[k] === undefined) delete process.env[k]; else process.env[k] = savedEnv[k]; }
     fs.rmSync(tmp, { recursive: true, force: true });
   }
   writes.code = code;
+  writes.probeCalls = probeCalls.n;
   return { code, writes };
 }
 
@@ -258,6 +269,170 @@ const ROSTER = { students: [{ name: 'Anwar' }, { name: 'Bilal' }] };
     eq(code, 0, 'a dry run must not fail on it');
     noWrites(writes, 'dry run with orphan');
     ok(/NOT on the roster/.test(writes.out), 'the dry run must list it');
+  });
+
+  /* ------------------- TEST MODE (emulators only, never jkss-fund) ------------ */
+  const EMU_ENV = { FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:9099', FIRESTORE_EMULATOR_HOST: '127.0.0.1:8080' };
+  const OK_PROBE = async () => ({ ok: true, auth: true, firestore: true, reason: null });
+  const SHORT = 'Adil42';   // 6 characters AND contains the roster name "Adil": only test mode accepts it
+  const TM = ['--test-mode-shared-password'];
+
+  t('TEST MODE refuses the PRODUCTION project even with both emulators and a passing probe', async () => {
+    const { code, writes } = await runApply(ROSTER, { project: 'jkss-fund', env: EMU_ENV, probe: OK_PROBE, extra: TM, secret: { content: SHORT + '\n' } });
+    eq(code, 1, 'must refuse');
+    ok(/PRODUCTION/.test(writes.error || ''), 'reason: ' + writes.error);
+    eq(writes.probeCalls, 0, 'the production refusal must come before any probe');
+    noWrites(writes, 'production');
+  });
+  t('TEST MODE refuses the production project in any letter case', async () => {
+    const { code, writes } = await runApply(ROSTER, { project: 'JKSS-FUND', env: EMU_ENV, probe: OK_PROBE, extra: TM, secret: { content: SHORT + '\n' } });
+    eq(code, 1, 'must refuse');
+    ok(/PRODUCTION/.test(writes.error || ''), 'reason: ' + writes.error);
+    noWrites(writes, 'JKSS-FUND');
+  });
+  t('TEST MODE refuses a project id that does not name a test project', async () => {
+    const { code, writes } = await runApply(ROSTER, { project: 'jkss-fund-prelaunch', env: EMU_ENV, probe: OK_PROBE, extra: TM, secret: { content: SHORT + '\n' } });
+    eq(code, 1, 'must refuse');
+    ok(/not a test project/.test(writes.error || ''), 'reason: ' + writes.error);
+    noWrites(writes, 'prelaunch');
+  });
+  t('TEST MODE refuses unless BOTH emulators are configured (Auth only)', async () => {
+    const { code, writes } = await runApply(ROSTER, { project: 'jkss-fund-test-stub', env: { FIRESTORE_EMULATOR_HOST: null, FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:9099' }, probe: OK_PROBE, extra: TM, secret: { content: SHORT + '\n' } });
+    eq(code, 1, 'must refuse');
+    ok(/BOTH emulators/.test(writes.error || ''), 'reason: ' + writes.error);
+    eq(writes.probeCalls, 0, 'no probe without both hosts');
+    noWrites(writes, 'one emulator');
+  });
+  t('TEST MODE refuses a NON-loopback emulator host (a remote server is never a test emulator)', async () => {
+    const { code, writes } = await runApply(ROSTER, { project: 'jkss-fund-test-stub', env: { FIREBASE_AUTH_EMULATOR_HOST: 'auth.example.com:9099', FIRESTORE_EMULATOR_HOST: '127.0.0.1:8080' }, probe: OK_PROBE, extra: TM, secret: { content: SHORT + '\n' } });
+    eq(code, 1, 'must refuse');
+    ok(/not a loopback/.test(writes.error || ''), 'reason: ' + writes.error);
+    noWrites(writes, 'remote host');
+  });
+  t('TEST MODE refuses when emulator verification FAILS (probe says no)', async () => {
+    const { code, writes } = await runApply(ROSTER, { project: 'jkss-fund-test-stub', env: EMU_ENV, probe: async () => ({ ok: false, auth: true, firestore: false, reason: 'firestore emulator not reachable' }), extra: TM, secret: { content: SHORT + '\n' } });
+    eq(code, 1, 'must refuse');
+    ok(/verification failed/.test(writes.error || ''), 'reason: ' + writes.error);
+    eq(writes.probeCalls, 1, 'the probe ran');
+    noWrites(writes, 'probe failed');
+  });
+  t('TEST MODE refuses when the emulators are not running at all (closed ports)', async () => {
+    const { code, writes } = await runApply(ROSTER, { project: 'jkss-fund-test-stub', env: { FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:1', FIRESTORE_EMULATOR_HOST: '127.0.0.1:2' }, extra: TM, secret: { content: SHORT + '\n' } });
+    eq(code, 1, 'must refuse');
+    ok(/verification failed/.test(writes.error || ''), 'reason: ' + writes.error);
+    noWrites(writes, 'closed ports');
+  });
+  t('TEST MODE with verified emulators ACCEPTS a 6-character password that contains a roster name', async () => {
+    const { code, writes } = await runApply(ROSTER, { project: 'jkss-fund-test-stub', env: EMU_ENV, probe: OK_PROBE, extra: TM, secret: { content: SHORT + '\n' } });
+    eq(code, 0, 'exit code: ' + writes.error);
+    eq(writes.authPasswords[BILAL_ID], SHORT, 'the test password is used for the NEW account');
+    ok(!writes.out.includes(SHORT), 'the test password must never be printed');
+    ok(!writes.credentialsText.includes(SHORT), 'nor stored in the credentials file');
+    ok(/TEST MODE — emulators verified/.test(writes.out), 'the run says it is TEST MODE');
+    ok(/password mode[^\n]*TEST MODE/.test(writes.out), 'the report says TEST MODE');
+  });
+  t('WITHOUT the test flag the same short, roster-named password is still refused (secure mode unchanged)', async () => {
+    const { code, writes } = await runApply(ROSTER, { project: 'jkss-fund-test-stub', env: EMU_ENV, probe: OK_PROBE, secret: { content: SHORT + '\n' } });
+    eq(code, 1, 'must refuse');
+    ok(/at least 12/.test(writes.error || ''), 'reason: ' + writes.error);
+    noWrites(writes, 'secure mode');
+  });
+  t('TEST MODE still refuses a password under 6 characters (the Firebase Auth floor)', async () => {
+    const { code, writes } = await runApply(ROSTER, { project: 'jkss-fund-test-stub', env: EMU_ENV, probe: OK_PROBE, extra: TM, secret: { content: 'Ab1cd\n' } });
+    eq(code, 1, 'must refuse');
+    ok(/at least 6/.test(writes.error || ''), 'reason: ' + writes.error);
+    noWrites(writes, 'below floor');
+  });
+  t('TEST MODE rerun: an EXISTING account keeps its password; a different test password changes nothing', async () => {
+    const live = Object.assign({}, LIVE, {
+      authUsers: [{ uid: 'u-bilal', email: BILAL_ID, hasPassword: true, providers: ['password'], disabled: false }],
+    });
+    const { code, writes } = await runApply(ROSTER, { project: 'jkss-fund-test-stub', env: EMU_ENV, probe: OK_PROBE, live, extra: TM, secret: { content: 'Other9' + '\n' } });
+    eq(code, 0, 'exit code');
+    ok(!(BILAL_ID in writes.authPasswords), 'existing account must not be created or re-passworded');
+    eq(writes.credentialsText, null, 'nothing new → no credentials rewrite');
+  });
+  t('TEST MODE without --shared-password-file is refused', async () => {
+    const { code, writes } = await runApply(ROSTER, { project: 'jkss-fund-test-stub', env: EMU_ENV, probe: OK_PROBE, extra: TM });
+    eq(code, 1, 'must refuse');
+    ok(/needs --shared-password-file/.test(writes.error || ''), 'reason: ' + writes.error);
+    noWrites(writes, 'no file');
+  });
+  t('TEST MODE is refused for every command except apply', async () => {
+    const { code, writes } = await runApply(ROSTER, { command: 'plan', project: 'jkss-fund-test-stub', env: EMU_ENV, probe: OK_PROBE, extra: TM });
+    eq(code, 1, 'must refuse');
+    ok(/only valid with the apply command/.test(writes.error || ''), 'reason: ' + writes.error);
+  });
+
+  /* ---------- the emulator probe itself, against real local HTTP servers ---- */
+  const http = require('http');
+  function fakeEmulator({ firestoreOk, authJson }) {
+    return new Promise((resolve) => {
+      const srv = http.createServer((req, res) => {
+        if (req.method === 'GET' && req.url === '/') {
+          if (firestoreOk) { res.writeHead(200); res.end('Ok'); } else { res.writeHead(404); res.end('nope'); }
+          return;
+        }
+        if (req.method === 'POST' && req.url.startsWith('/identitytoolkit')) {
+          if (authJson) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { message: 'EMAIL_NOT_FOUND' } })); }
+          else { res.writeHead(200); res.end('plain text'); }
+          return;
+        }
+        res.writeHead(404); res.end();
+      });
+      srv.listen(0, '127.0.0.1', () => resolve({ srv, host: '127.0.0.1:' + srv.address().port }));
+    });
+  }
+  const close = (srv) => new Promise((r) => srv.close(() => r()));
+  t('probe: a server answering like BOTH emulators is verified', async () => {
+    const { srv, host } = await fakeEmulator({ firestoreOk: true, authJson: true });
+    try {
+      const r = await testModeLib.probeEmulators({ authHost: host, firestoreHost: host });
+      eq(r.ok, true, 'ok'); eq(r.auth, true, 'auth'); eq(r.firestore, true, 'firestore');
+    } finally { await close(srv); }
+  });
+  t('probe: a Firestore that does not answer its health route is NOT verified', async () => {
+    const { srv, host } = await fakeEmulator({ firestoreOk: false, authJson: true });
+    try {
+      const r = await testModeLib.probeEmulators({ authHost: host, firestoreHost: host });
+      eq(r.ok, false); eq(r.firestore, false); eq(r.auth, true);
+    } finally { await close(srv); }
+  });
+  t('probe: an Auth host that is NOT the Identity Toolkit emulator is NOT verified', async () => {
+    const { srv, host } = await fakeEmulator({ firestoreOk: true, authJson: false });
+    try {
+      const r = await testModeLib.probeEmulators({ authHost: host, firestoreHost: host });
+      eq(r.ok, false); eq(r.auth, false);
+    } finally { await close(srv); }
+  });
+  t('probe: closed ports (no emulator running) give a reason and are NOT verified', async () => {
+    const r = await testModeLib.probeEmulators({ authHost: '127.0.0.1:1', firestoreHost: '127.0.0.1:2', timeoutMs: 1500 });
+    eq(r.ok, false); ok(r.reason, 'a reason is given');
+  });
+  t('gate: REAL probe + verified emulators + a test project → accepted (no stub)', async () => {
+    const { srv, host } = await fakeEmulator({ firestoreOk: true, authJson: true });
+    try {
+      const r = await testModeLib.assertTestModeAllowed({ project: 'jkss-fund-e2e', env: { FIREBASE_AUTH_EMULATOR_HOST: host, FIRESTORE_EMULATOR_HOST: host } });
+      eq(r.project, 'jkss-fund-e2e');
+    } finally { await close(srv); }
+  });
+  t('gate: REAL probe + verified emulators but jkss-fund → refused (production check first)', async () => {
+    const { srv, host } = await fakeEmulator({ firestoreOk: true, authJson: true });
+    try {
+      let threw = null;
+      try { await testModeLib.assertTestModeAllowed({ project: 'jkss-fund', env: { FIREBASE_AUTH_EMULATOR_HOST: host, FIRESTORE_EMULATOR_HOST: host } }); }
+      catch (e) { threw = e; }
+      ok(threw && /PRODUCTION/.test(threw.message), 'must refuse production: ' + (threw && threw.message));
+    } finally { await close(srv); }
+  });
+  t('gate: REAL probe + a server that is not an emulator → refused', async () => {
+    const { srv, host } = await fakeEmulator({ firestoreOk: false, authJson: false });
+    try {
+      let threw = null;
+      try { await testModeLib.assertTestModeAllowed({ project: 'jkss-fund-e2e', env: { FIREBASE_AUTH_EMULATOR_HOST: host, FIRESTORE_EMULATOR_HOST: host } }); }
+      catch (e) { threw = e; }
+      ok(threw && /verification failed/.test(threw.message), 'must refuse: ' + (threw && threw.message));
+    } finally { await close(srv); }
   });
 
   for (const c of cases) {

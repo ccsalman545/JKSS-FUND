@@ -268,6 +268,29 @@ check('shared file: git-ignore protection exists in both .gitignore files (defen
 check('shared file: the module never exposes the password through its error messages', () => {
   throwsMatching(() => sharedPw.readSharedPasswordFile(secretFile('bad.txt', 'Sayyid2026!\n'), { students: ROSTER_STUDENTS }), /must not contain|at least/);
 });
+
+/* ---------------- test-only relaxation (lib/shared-password.js testMode) ---------------- */
+check('test mode: a 6-character password is accepted ONLY in test mode', () => {
+  ok(!sharedPw.validateSharedPassword('Adil42', { students: ROSTER_STUDENTS }).ok, 'secure mode refuses 6 characters');
+  ok(sharedPw.validateSharedPassword('Adil42', { students: ROSTER_STUDENTS, testMode: true }).ok, 'test mode accepts 6');
+  ok(!sharedPw.validateSharedPassword('Adil4', { students: [], testMode: true }).ok, 'test mode still refuses 5');
+});
+check('test mode: the roster name/username check is skipped, nothing else is', () => {
+  ok(sharedPw.validateSharedPassword('Sayyid9', { students: ROSTER_STUDENTS, testMode: true }).ok, 'roster name allowed in test mode');
+  ok(!sharedPw.validateSharedPassword('Sayyid9', { students: ROSTER_STUDENTS }).ok, 'roster name refused in secure mode');
+  ok(!sharedPw.validateSharedPassword('abcdef', { testMode: true }).ok, 'letter AND digit still required');
+  ok(!sharedPw.validateSharedPassword('ab 12cd', { testMode: true }).ok, 'no spaces in test mode either');
+  ok(!sharedPw.validateSharedPassword('Ab1Ab1', { testMode: true }).ok, 'the 6-distinct-character rule still applies');
+  ok(!sharedPw.validateSharedPassword('Ab1' + 'c'.repeat(126), { testMode: true }).ok, 'the 128 maximum still applies');
+});
+check('test mode: readSharedPasswordFile applies the same file rules (mode, one line) and reports testMode', () => {
+  const f = secretFile('tm-ok.txt', 'Adil42\n');
+  const r = sharedPw.readSharedPasswordFile(f, { students: ROSTER_STUDENTS, testMode: true });
+  eq(r.password, 'Adil42'); eq(r.testMode, true);
+  throwsMatching(() => sharedPw.readSharedPasswordFile(secretFile('tm-644.txt', 'Adil42\n', 0o644), { testMode: true }), /group\/other/);
+  throwsMatching(() => sharedPw.readSharedPasswordFile(secretFile('tm-two.txt', 'Adil42\nx\n'), { testMode: true }), /exactly one line/);
+  eq(sharedPw.readSharedPasswordFile(secretFile('sec.txt', GOOD + '\n'), { students: ROSTER_STUDENTS }).testMode, false, 'secure default reports testMode false');
+});
 function planLibForPw() { return require('../lib/plan'); }
 
 fs.rmSync(tmpRoot, { recursive: true, force: true });

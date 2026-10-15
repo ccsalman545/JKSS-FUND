@@ -45,6 +45,7 @@ const identity = require(path.join(REPO_ROOT, 'mobile', 'src', 'identity.js'));
 const { readCredentials, modeOf } = require('../lib/credentials');
 const { signInWithPassword } = require('../lib/firebase');
 const planLib = require('../lib/plan');
+const sharedPwLib = require(path.join(REPO_ROOT, 'tools', 'provision', 'lib', 'shared-password.js'));
 
 const admin = require('firebase-admin');
 const app = admin.initializeApp({ projectId: PROJECT });
@@ -665,6 +666,107 @@ async function countUsers() {
     const after = (await db.collection('users').doc(ORPHAN).get()).data();
     eq(after.balancePaise, 4200, 'the orphan balance is still untouched with --allow-unrostered');
     ok(!('txnSeq' in after), 'the orphan is still not backfilled with --allow-unrostered');
+  });
+
+  /* ----- 12. TEST MODE: short shared password, emulators only (empty project) ----- */
+  // The owner's protected local password file can be supplied with
+  // SHARED_TEST_PASSWORD_FILE. The tool reads it; this test never prints it. When
+  // the variable is not set, a fresh short password is generated for this run.
+  await clearEmulatorProject();
+  const TM_CREDS = path.join(TMP, 'tm-credentials.json');
+  const TM_GENERATED = path.join(TMP, 'tm-shared-password.txt');
+  const TM_OTHER = path.join(TMP, 'tm-other-password.txt');
+  const crypto = require('crypto');
+  const digitPair = () => { const a = crypto.randomInt(10); return String(a) + String((a + 1 + crypto.randomInt(9)) % 10); };
+  const TM_FILE = process.env.SHARED_TEST_PASSWORD_FILE || TM_GENERATED;
+  let TM_PW = null;
+  await check('test mode: the password file is present and passes TEST MODE file rules (value not shown)', () => {
+    if (!process.env.SHARED_TEST_PASSWORD_FILE) {
+      fs.writeFileSync(TM_GENERATED, 'Adil' + digitPair() + '\n', { mode: 0o600 });
+      fs.chmodSync(TM_GENERATED, 0o600);
+    }
+    // Validates the same way the tool does; a thrown message never contains the password.
+    TM_PW = sharedPwLib.readSharedPasswordFile(TM_FILE, { students: planLib.buildRoster(JSON.parse(fs.readFileSync(ROSTER, 'utf8'))), testMode: true }).password;
+    ok(TM_PW.length >= 6, 'test password too short for the Firebase Auth floor');
+  });
+  const tmArgs = (project, file, extra = []) => ['apply', '--project', project, '--roster', ROSTER, '--out', OUT,
+    '--credentials-file', TM_CREDS, '--shared-password-file', file, '--test-mode-shared-password'].concat(extra);
+  const runEnv = (args, env) => {
+    const res = spawnSync(process.execPath, [CLI].concat(args), {
+      cwd: REPO_ROOT, env: Object.assign({}, process.env, env), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+    });
+    return { code: res.status, stdout: res.stdout || '', stderr: res.stderr || '' };
+  };
+  const signInTM = (username, password) => signInWithPassword({ identifier: identity.identifierFor(username), password });
+
+  await check('test mode is REFUSED for the production project even with both emulators active (dry run and --apply)', async () => {
+    for (const extra of [[], ['--apply']]) {
+      const r = run(tmArgs('jkss-fund', TM_FILE, extra));
+      eq(r.code, 1, 'must refuse');
+      ok(/PRODUCTION/.test(r.stderr + r.stdout), 'reason: ' + r.stderr);
+      ok(!(r.stdout + r.stderr).includes(TM_PW), 'never printed');
+    }
+    eq((await auth.listUsers(1000)).users.length, 0, 'nothing written anywhere');
+    eq(fs.existsSync(TM_CREDS), false, 'no credentials file');
+  });
+  await check('test mode is REFUSED when the emulators are not configured', async () => {
+    const r = runEnv(tmArgs(PROJECT, TM_FILE), { FIREBASE_AUTH_EMULATOR_HOST: '', FIRESTORE_EMULATOR_HOST: '' });
+    eq(r.code, 1, 'must refuse');
+    ok(/BOTH emulators/.test(r.stderr + r.stdout), 'reason: ' + r.stderr);
+  });
+  await check('test mode is REFUSED when emulator verification fails (auth emulator not answering)', async () => {
+    const r = runEnv(tmArgs(PROJECT, TM_FILE), { FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:1' });
+    eq(r.code, 1, 'must refuse');
+    ok(/verification failed/.test(r.stderr + r.stdout), 'reason: ' + r.stderr);
+    ok(!(r.stdout + r.stderr).includes(TM_PW), 'never printed');
+  });
+  await check('WITHOUT the test flag the short password is still refused (secure mode unchanged)', async () => {
+    const r = run(['apply', '--project', PROJECT, '--roster', ROSTER, '--out', OUT, '--credentials-file', TM_CREDS,
+      '--shared-password-file', TM_FILE, '--apply']);
+    eq(r.code, 1, 'must refuse');
+    ok(/at least 12/.test(r.stderr + r.stdout), 'reason: ' + r.stderr);
+    eq((await auth.listUsers(1000)).users.length, 0, 'nothing written');
+  });
+  await check('TEST MODE dry run: validates, says TEST MODE, writes nothing, never prints the password', async () => {
+    const r = run(tmArgs(PROJECT, TM_FILE)).expectCode(0);
+    ok(/DRY RUN/.test(r.stdout), 'must say DRY RUN');
+    ok(/TEST MODE/.test(r.stdout), 'must say TEST MODE');
+    ok(!(r.stdout + r.stderr).includes(TM_PW), 'never printed');
+    eq((await auth.listUsers(1000)).users.length, 0, 'a dry run creates nothing');
+    eq(await countUsers(), 0, 'no profile');
+  });
+  await check('TEST MODE --apply creates 24 accounts with the test password; username/password login works', async () => {
+    const r = run(tmArgs(PROJECT, TM_FILE, ['--apply'])).expectCode(0);
+    ok(/APPLY COMPLETE/.test(r.stdout));
+    ok(!(r.stdout + r.stderr).includes(TM_PW), 'never printed');
+    eq((await auth.listUsers(1000)).users.length, 24, 'one Auth account per roster student');
+    eq(await countUsers(), 24, 'one profile per student');
+    for (const username of ['adil.jr', 'sayyid.zain']) {
+      const res = await signInTM(username, TM_PW);
+      ok(res.ok, 'test password must sign in ' + username + ': ' + res.code);
+    }
+    eq((await signInTM('adil.jr', TM_PW + 'x')).ok, false, 'a wrong password is rejected');
+  });
+  await check('TEST MODE credentials: 0600, no password recorded, nothing in Firestore', async () => {
+    eq(modeOf(TM_CREDS), '600');
+    const text = fs.readFileSync(TM_CREDS, 'utf8');
+    ok(!text.includes(TM_PW), 'the password must not be in the credentials file');
+    const creds = readCredentials(TM_CREDS);
+    eq(creds.students.length, 24);
+    creds.students.forEach((st) => { ok(!('password' in st), 'no password for ' + st.username); eq(st.passwordSource, 'owner-shared-initial'); });
+    const docs = JSON.stringify((await db.collection('users').get()).docs.map((d) => d.data()));
+    ok(!docs.includes(TM_PW), 'the password must never reach Firestore');
+  });
+  await check('TEST MODE RERUN with a DIFFERENT password never overwrites an existing password', async () => {
+    fs.writeFileSync(TM_OTHER, 'Other' + digitPair() + '\n', { mode: 0o600 });
+    fs.chmodSync(TM_OTHER, 0o600);
+    const OTHER = sharedPwLib.readSharedPasswordFile(TM_OTHER, { testMode: true }).password;
+    const before = fs.readFileSync(TM_CREDS, 'utf8');
+    run(tmArgs(PROJECT, TM_OTHER, ['--apply'])).expectCode(0);
+    eq((await auth.listUsers(1000)).users.length, 24, 'no duplicate accounts');
+    eq(fs.readFileSync(TM_CREDS, 'utf8'), before, 'the credentials file must be untouched');
+    ok((await signInTM('adil.jr', TM_PW)).ok, 'the ORIGINAL test password still works (never overwritten)');
+    eq((await signInTM('adil.jr', OTHER)).ok, false, 'the rerun password must NOT have been applied');
   });
 
   fs.rmSync(TMP, { recursive: true, force: true });

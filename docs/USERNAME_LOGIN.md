@@ -369,6 +369,49 @@ nothing. Only if you have confirmed that each one is intentional, add
 `--allow-unrostered`. Those records are still left untouched (no backfill, no
 write, no deletion). Decide with the owner before using that flag on production.
 
+**Test-mode shared password (emulators only — never production).** A short
+password (at least 6 characters, may contain a roster name) is sometimes needed to
+exercise the login flow in the emulator. It is available ONLY through an explicit
+flag, and the tool refuses it unless **all** of these are true:
+
+* both the Firebase **Auth** and the **Firestore** emulators are active
+  (`FIREBASE_AUTH_EMULATOR_HOST` and `FIRESTORE_EMULATOR_HOST` are set, and each
+  answers on a loopback address; the tool probes both before it reads the file);
+* the project id is **not** `jkss-fund` (refused even when the flag is supplied, in
+  any letter case) and it names a test project (contains `test`, `e2e` or `emulator`);
+* the flag is `--test-mode-shared-password` (it is rejected for any command other
+  than `apply`).
+
+Without the flag, production validation is unchanged (12+ characters, no roster
+names, and so on). Test mode relaxes only the length floor (to Firebase Auth's
+6) and the roster-name check; the file rules (0600, one line, outside git, no
+symlink) and the character rules still apply. The password is never printed,
+logged, stored in Firestore or committed; a TEST MODE banner is printed, and the
+credentials file records `passwordSource: owner-shared-initial` only.
+
+The exact command, against the local emulators started with
+`firebase emulators:start --project jkss-fund-e2e --only auth,firestore` (Auth on
+9099, Firestore on 8080, as in `firebase/firebase.json`):
+
+```bash
+cd tools/provision
+FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 \
+node provision.js apply --project jkss-fund-e2e \
+  --shared-password-file ~/jkss-secrets/test-shared-password.txt \
+  --test-mode-shared-password --apply
+```
+
+The automated version is section 12 of the emulator suite, which CI runs
+(`firebase emulators:exec --project jkss-fund-e2e --only firestore,auth
+"node ../tools/provision/test/emulator.test.js"`). It sets
+`SHARED_TEST_PASSWORD_FILE` to a local file when you supply one; otherwise it
+generates a throwaway short password for that run. It covers the refusals
+(production project, missing emulators, failed verification, secure mode without
+the flag), a dry run, account creation, username and password sign-in, the
+no-password-in-storage checks, and a rerun with a different password that must
+never change an existing account. Test mode is never used against the live
+project, and it is not an approved production step.
+
 **After the apply:** hand the shared password to each student privately, and ask
 them to change it. Then delete the password file, or keep it only in your
 password manager. Your next step is the change itself; the app will not check it.
@@ -836,10 +879,10 @@ change only at step 7, and the held students change only through §7.2.
 | `mobile/test/accounting.test.js` | local + CI | **31 passed, 0 failed** — paise math unchanged (the money invariants) |
 | `mobile/test/api.mock.test.js` | local + CI | **38 passed, 0 failed** — username login (real `auth/*` error codes), no-enumeration error text, authorization gate, ledger identity, all transaction flows |
 | `tools/provision/test/plan.test.js` | local + CI | **55 passed, 0 failed** — the approved 24-name roster (Sayyid Zain replaces Thangal), synthetic identities NOT on the roster reported and frozen (never backfilled) — includes the D-1 frozen-profile checks; roster-hold validation and enforcement (incl. the explicit hold on a legacy-matched student),  roster → username, collision rules, ambiguity/weak-match handling, held-back students, admin preservation, safety gates, CLI parsing, **docs↔code mapping drift**, and **docs↔CLI drift** (every command/flag printed in these docs must exist in the tool) |
-| `tools/provision/test/apply.test.js` | local + CI | **19 passed, 0 failed** — D-1 through the real `apply` path (Firebase stubbed): a held legacy profile gets no Auth account, no profile and no `txnSeq`; eligible and former profiles are still backfilled; a roster hold freezes too; shared mode (new accounts only, existing accounts never re-passworded, nothing printed or stored, dry run writes nothing); bad, missing, insecure or malformed password files refused with nothing written; an unrostered identity blocks writes unless `--allow-unrostered`, and is then left untouched |
-| `tools/provision/test/passwords.test.js` | local + CI | **33 passed, 0 failed** — CSPRNG passwords (20k uniqueness), unambiguous alphabet, policy compliance, 0600 credentials file, never-overwrite; shared-password rules (length, ASCII, policy, roster names/tokens, 0600/0400 only, no symlink, one line, git-ignore inside the repo) |
+| `tools/provision/test/apply.test.js` | local + CI | **39 passed, 0 failed** — D-1 through the real `apply` path (Firebase stubbed): a held legacy profile gets no Auth account, no profile and no `txnSeq`; eligible and former profiles are still backfilled; a roster hold freezes too; shared mode (new accounts only, existing accounts never re-passworded, nothing printed or stored, dry run writes nothing); bad, missing, insecure or malformed password files refused with nothing written; an unrostered identity blocks writes unless `--allow-unrostered`, and is then left untouched; TEST MODE (`--test-mode-shared-password`) refused for `jkss-fund`, without both emulators, or when the emulator probe fails, accepted only against loopback emulators, with real local probe servers |
+| `tools/provision/test/passwords.test.js` | local + CI | **36 passed, 0 failed** (incl. test-mode relaxation: 6 characters and a roster name only with the test flag, every other rule unchanged) — CSPRNG passwords (20k uniqueness), unambiguous alphabet, policy compliance, 0600 credentials file, never-overwrite; shared-password rules (length, ASCII, policy, roster names/tokens, 0600/0400 only, no symlink, one line, git-ignore inside the repo) |
 | `firebase/test/rules.test.js` | CI (`Firestore rules`, emulator) | **121 scenarios** in the production rules engine (section 14: 22 held-account gate scenarios; section 15: 10 pre-authorization gate scenarios; the 111-scenario run `38729530740` succeeded on `cd63dbe`). The 121 count is confirmed only by the CI run on the verification-gate commit. Before the gate: 89 passed (14 new synthetic-identifier scenarios: pre-authorization, unauthorized-account lockout, withdrawals/credits/reversals with synthetic ids, no rules loosening) |
-| `tools/provision/test/emulator.test.js` | CI (`provisioning-e2e`, Auth+Firestore emulators) | **45 checks** (37 before the shared-password work, plus 8 in §11, which starts from an emptied emulator project: refused bad-permission and malformed files, a dry run, 24 shared-password accounts that sign in, no password in the credentials file or Firestore, a rerun with another password changes nothing, an explicit random reset, and an unrostered identity blocking writes; the CI run on the pushed commit confirms the result) — a dry run creates no Auth user and touches no document, 23 accounts created idempotently, admin account+password and both admin docs preserved, balances/ledgers byte-identical, no plaintext password in Firestore, valid/invalid password sign-in, unauthorized student has no profile, reset-password, identity migration with backup, safety gates |
+| `tools/provision/test/emulator.test.js` | CI (`provisioning-e2e`, Auth+Firestore emulators) | **45 checks** (37 before the shared-password work, plus 8 in §11, which starts from an emptied emulator project: refused bad-permission and malformed files, a dry run, 24 shared-password accounts that sign in, no password in the credentials file or Firestore, a rerun with another password changes nothing, an explicit random reset, and an unrostered identity blocking writes; §12 adds 9 checks for TEST MODE: refused for the production project, without emulators, and when verification fails; secure mode still refuses a short password; a dry run; 24 accounts with the test password that sign in; no password in the credentials file or Firestore; a rerun with another password changes nothing. The CI run on the pushed commit confirms the result) — a dry run creates no Auth user and touches no document, 23 accounts created idempotently, admin account+password and both admin docs preserved, balances/ledgers byte-identical, no plaintext password in Firestore, valid/invalid password sign-in, unauthorized student has no profile, reset-password, identity migration with backup, safety gates |
 
 Exact commands (also in `SECURITY_REVIEW.md` §5):
 
