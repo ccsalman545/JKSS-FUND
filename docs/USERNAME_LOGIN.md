@@ -10,6 +10,20 @@ deployment checklist.
 > is dry-run by default, the migration steps are plans, and the two CI jobs
 > (`Firestore rules`, `Username login (v3.0)`) run everything that *can* be run
 > automatically against emulators, not against the `jkss-fund` project.
+>
+> **Latest CI evidence (branch `arena/883804d8-jkss-fund`, commit `c69…`):**
+>
+> | Run | Job | Result |
+> |---|---|---|
+> | [38717587168](https://github.com/ccsalman545/JKSS-FUND/actions/runs/38717587168) | Rules unit tests (Firestore emulator) | **89 passed, 0 failed** |
+> | [38717587168](https://github.com/ccsalman545/JKSS-FUND/actions/runs/38717587168) | Accounting + identity + api orchestration | **green** (63 + 31 + 37, plus 36 + 15 provisioning) |
+> | [38717587462](https://github.com/ccsalman545/JKSS-FUND/actions/runs/38717587462) | Node suites (identity · plan · accounting · data layer) | **green** |
+> | [38717587462](https://github.com/ccsalman545/JKSS-FUND/actions/runs/38717587462) | Provisioning + login E2E (Auth + Firestore emulators) | **31 passed, 0 failed** |
+>
+> The rules suite **cannot run in this sandbox** (no Java, and no emulator JAR
+> may be downloaded here) — CI is the environment where it executes, exactly as
+> the earlier security work documented. Each workflow fails unless its output
+> ends with `N passed, 0 failed`.
 
 ---
 
@@ -17,7 +31,7 @@ deployment checklist.
 
 | | v3.x (before) | v3.0 (now) |
 |---|---|---|
-| Student login | Google Sign-In (never configured — `google-services.json` ships with `oauth_client: []`) or email/password with a **real email** | **Assigned username + password** — no student email address is needed, stored, or invented |
+| Student login | Google Sign-In (removed) or email/password with a **real email** | **Assigned username + password** — no student email address is needed, stored, or invented |
 | Firebase Auth credential | Google ID token *(or* real email/password *)* | Firebase **Email/Password** with a synthetic `<username>@students.jkss-fund.invalid` identifier |
 | Admin login | Email/password | **Unchanged** — same account, same password |
 | Student profiles | `users/{real-email}` pre-authorized by the admin | `users/{synthetic-identifier}` pre-authorized by the admin **or** created by the local provisioning tool |
@@ -451,13 +465,13 @@ real project, and each one is reversible.**
 
 | Suite | Where | What it proves |
 |---|---|---|
-| `mobile/test/identity.test.js` | local + CI (`node-suites`) | Normalization, collisions, identifier mapping, password policy, 20k-input fuzz |
-| `mobile/test/accounting.test.js` | local + CI | Paise math unchanged (the money invariants) |
-| `mobile/test/api.mock.test.js` | local + CI | Username login (real Auth error codes), authorization gate, ledger identity, all transaction flows |
-| `tools/provision/test/plan.test.js` | local + CI | Roster → username, collision rules, ambiguity/weak-match handling, held-back students, admin preservation, safety gates, CLI parsing, **docs↔code mapping drift** |
-| `tools/provision/test/passwords.test.js` | local + CI | CSPRNG passwords (20k uniqueness), unambiguous alphabet, policy compliance, 0600 credentials file, never-overwrite |
-| `firebase/test/rules.test.js` | CI (`Firestore rules`, emulator) | 89 scenarios in the production rules engine, incl. 14 new synthetic-identifier scenarios: pre-authorization, unauthorized-account lockout, withdrawals/credits/reversals with synthetic ids, no rules loosening |
-| `tools/provision/test/emulator.test.js` | CI (`provisioning-e2e`, Auth+Firestore emulators) | End-to-end: dry-run writes nothing, 23 accounts created idempotently, admin account+password and both admin docs preserved, balances/ledgers untouched, no plaintext password in Firestore, valid/invalid password sign-in, unauthorized student has no profile, reset-password, identity migration with backup, safety gates |
+| `mobile/test/identity.test.js` | local + CI | **63 passed, 0 failed** — normalization, collisions, identifier mapping, password policy, 20k-input fuzz |
+| `mobile/test/accounting.test.js` | local + CI | **31 passed, 0 failed** — paise math unchanged (the money invariants) |
+| `mobile/test/api.mock.test.js` | local + CI | **37 passed, 0 failed** — username login (real `auth/*` error codes), no-enumeration error text, authorization gate, ledger identity, all transaction flows |
+| `tools/provision/test/plan.test.js` | local + CI | **36 passed, 0 failed** — roster → username, collision rules, ambiguity/weak-match handling, held-back students, admin preservation, safety gates, CLI parsing, **docs↔code mapping drift** |
+| `tools/provision/test/passwords.test.js` | local + CI | **15 passed, 0 failed** — CSPRNG passwords (20k uniqueness), unambiguous alphabet, policy compliance, 0600 credentials file, never-overwrite |
+| `firebase/test/rules.test.js` | CI (`Firestore rules`, emulator) | **89 passed, 0 failed** in the production rules engine (14 new synthetic-identifier scenarios: pre-authorization, unauthorized-account lockout, withdrawals/credits/reversals with synthetic ids, no rules loosening) |
+| `tools/provision/test/emulator.test.js` | CI (`provisioning-e2e`, Auth+Firestore emulators) | **31 passed, 0 failed** — dry-run writes nothing, 23 accounts created idempotently, admin account+password and both admin docs preserved, balances/ledgers byte-identical, no plaintext password in Firestore, valid/invalid password sign-in, unauthorized student has no profile, reset-password, identity migration with backup, safety gates |
 
 Exact commands (also in `SECURITY_REVIEW.md` §5):
 

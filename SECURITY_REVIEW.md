@@ -766,7 +766,23 @@ account; the completed security and accounting work stays intact.
 | Passwords | Students' passwords live **only** in Firebase Authentication. Nothing stores them in Firestore, and the only local copy is the tool's 0600 credentials file (git-ignored). The app never calls `sendPasswordResetEmail` |
 | Why `.invalid` | RFC 2606 reserves the TLD: it can never be registered or delivered to. A reset email addressed to a student identifier therefore cannot reach a third party, and we are not inventing a real address |
 
-### 11.2 New tests (all in CI; commands in §5)
+### 11.2 New tests (all executed in CI; commands in §5)
+
+**Actual results on branch `arena/883804d8-jkss-fund` after the v3.0 commits:**
+
+| Job | Run | Result |
+|---|---|---|
+| Rules unit tests (Firestore emulator, production rules engine) | `38717587168` | **SUCCESS — 89 passed, 0 failed** (75 previous + 14 new synthetic-identifier scenarios) |
+| Accounting + identity + api orchestration | `38717587168` | SUCCESS — 63 identity + 31 accounting + 37 api/login + 36 provisioning plan + 15 password checks |
+| Username login (v3.0) → Node suites | `38717587462` | SUCCESS |
+| Username login (v3.0) → Provisioning + login E2E (Auth + Firestore emulators, `firebase-admin`) | `38717587462` | **SUCCESS — 31 passed, 0 failed** |
+
+The first CI run of the new suites found three *test-harness* expectations to
+correct (one rules assertion that was actually an allowed "read your own missing
+profile" call, and two E2E invocation mistakes) — the tool and rules behaviour
+were already correct in that run; the annotations made both visible without
+touching production.
+
 
 * `mobile/test/identity.test.js` — normalization, collision rules, injective
   identifier mapping, RFC 2606 domain, password policy, 20k fuzz inputs.
