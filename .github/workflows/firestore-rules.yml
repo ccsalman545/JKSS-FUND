@@ -45,7 +45,7 @@ jobs:
         run: |
           firebase emulators:exec --project jkss-fund-local --only firestore "node test/rules.test.js" \
             > rules-test-output.txt 2>&1 || true
-          echo "::error title=rules-output::captured output: $(wc -c < rules-test-output.txt 2>/dev/null || echo '?') bytes | head: $(head -c 700 rules-test-output.txt 2>/dev/null | tr '\n' '|')"
+          echo "::error title=rules-output::captured output: $(wc -c < rules-test-output.txt 2>/dev/null || echo '?') bytes"
           {
             echo '## Firestore rules test output'
             echo '```'
@@ -53,16 +53,12 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           if ! grep -qE '^[0-9]+ passed, 0 failed' rules-test-output.txt; then
-            echo "::error title=rules-output::suite failed or did not complete — posting tail as commit comment"
+            # Single-line annotation (newlines as '|') so the full output is
+            # readable via the job annotations API even when raw logs are
+            # unavailable.
+            echo "::error title=rules-output::$(tr '\n' '|' < rules-test-output.txt 2>/dev/null | head -c 6000)"
             exit 1
           fi
-
-      - name: Post failure output as commit comment
-        if: failure()
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          node firebase/test/post-ci-output.js firebase/rules-test-output.txt 2>&1 | sed 's/^/::error title=post::/'
 
   accounting:
     name: Accounting + api orchestration tests
