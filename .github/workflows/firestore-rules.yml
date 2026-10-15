@@ -53,12 +53,21 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           if ! grep -qE '^[0-9]+ passed, 0 failed' rules-test-output.txt; then
-            # Single-line annotation (newlines as '|') so the full output is
-            # readable via the job annotations API even when raw logs are
-            # unavailable.
-            echo "::error title=rules-output::$(tr '\n' '|' < rules-test-output.txt 2>/dev/null | head -c 6000)"
+            # Compact single-line annotation (newlines as '|'): summary
+            # counts + every failed scenario + the first error lines, so
+            # failures are readable without raw-log access.
+            SUMMARY=$(grep -E '^[0-9]+ passed' rules-test-output.txt | tr '\n' ' ')
+            FAILS=$(grep -E '^FAIL|FATAL|Error compiling|PERMISSION_DENIED|maximum of 1000' rules-test-output.txt | head -c 5000 | tr '\n' '|')
+            echo "::error title=rules-output::FAILED — ${SUMMARY} Failed scenarios: ${FAILS}"
             exit 1
           fi
+      - name: Upload full test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rules-test-output
+          path: firebase/rules-test-output.txt
+          if-no-files-found: ignore
 
   accounting:
     name: Accounting + api orchestration tests
