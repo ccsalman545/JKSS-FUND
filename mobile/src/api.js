@@ -77,6 +77,13 @@ const profileShape = (email, d = {}) => ({
   removedAt: d.removedAt || null,
 });
 
+// True when Firestore denies a read because the signed-in account has no
+// access (for example a legacy real-email student on hold). Both SDK spellings.
+export const isAccessDenied = (err) => {
+  const code = err && err.code;
+  return code === 'permission-denied' || code === 'firestore/permission-denied';
+};
+
 export const api = {
   // ---------- Auth (delegated to AuthContext; these just perform sign-in) ----------
   // Accepts what the login form gives us:

@@ -35,6 +35,13 @@ rules_version = '2';
 // only (by an admin or the console, at create-time) and can never be
 // updated, so the admin set can only grow through the two create rules.
 //
+// STUDENT ACCESS GATE (held legacy accounts): a student's financial paths
+// (own profile read/write, own ledger read, withdrawals, committee read)
+// require a USERNAME identifier (<username>@students.jkss-fund.invalid) or an
+// explicit legacyAuthorizations/{email} document with authorized == true.
+// Any other real-email account is on hold and reads/writes nothing financial.
+// Admins are unchanged.
+//
 // STUDENT PRE-AUTHORIZATION: profile documents are created ONLY by admins
 // (or the console). There is NO self-provisioning path — a signed-in
 // account without a matching users/{email} doc has no profile and the app
@@ -129,6 +136,42 @@ service cloud.firestore {
       return signedIn()
         && request.auth.token.email is string
         && request.auth.token.email == email;
+    }
+
+    /* ----------------- student access gate (held legacy accounts) -------
+       A signed-in account may use ANY student financial path only when:
+         (1) its Auth email is a USERNAME identifier
+             (<username>@students.jkss-fund.invalid — the v3.0 login); or
+         (2) an explicit authorization exists at
+             legacyAuthorizations/{email} with authorized == true (written
+             only by an admin in the Firebase console / admin SDK).
+       Any other real-email account is a legacy student ON HOLD (Option B):
+       it reads and writes no financial data, even when its users/{email}
+       profile still exists with a balance and a txnSeq. Admins keep their
+       access through isAdmin() and selfAccessOk(); nothing here changes
+       what an admin can do.
+       This is a rules-level freeze. The provisioning tool's txnSeq freeze
+       (decision D-1) is a separate, tool-level control.                  */
+    function usernameIdentifier(e) {
+      return e.matches('^[a-z0-9._-]+@students[.]jkss-fund[.]invalid$');
+    }
+
+    function legacyAuthorized(e) {
+      return exists(/databases/$(database)/documents/legacyAuthorizations/$(e))
+        && get(/databases/$(database)/documents/legacyAuthorizations/$(e)).data.authorized == true;
+    }
+
+    function studentAccessOk() {
+      return signedIn()
+        && request.auth.token.email is string
+        && (usernameIdentifier(request.auth.token.email)
+            || legacyAuthorized(request.auth.token.email));
+    }
+
+    // Self paths: an authorized student, or an admin (admin self-access is
+    // unchanged by the gate).
+    function selfAccessOk() {
+      return studentAccessOk() || isAdmin();
     }
 
     // Integer paise of a user/committee doc (legacy docs carry rupee floats).
@@ -265,7 +308,7 @@ service cloud.firestore {
                                 'balancePaise', 'balance', 'txnSeq', 'createdAt']);
       }
 
-      allow get: if isSelf(email) || isAdmin();
+      allow get: if isAdmin() || (isSelf(email) && selfAccessOk());
       allow list: if isAdmin();
 
       /* Students are PRE-AUTHORIZED: only an admin (or the Firebase
@@ -280,7 +323,7 @@ service cloud.firestore {
       // Self: atomic withdrawal pair (user + canonical txn), or profile.
       // Profile is checked first so profile updates never reach the
       // withdrawal reads (a missing optional field would otherwise deny).
-      allow update: if isSelf(email) && (selfProfileOk() || withdrawalOk());
+      allow update: if isSelf(email) && selfAccessOk() && (selfProfileOk() || withdrawalOk());
 
       // Admin: plain roster maintenance first, then the verified batch
       // roles (each reads optional fields, so they must not run for
@@ -296,8 +339,8 @@ service cloud.firestore {
 
     match /users/{email}/transactions/{txnId} {
 
-      allow get: if isSelf(email) || isAdmin();
-      allow list: if isSelf(email) || isAdmin();
+      allow get: if isAdmin() || (isSelf(email) && selfAccessOk());
+      allow list: if isAdmin() || (isSelf(email) && selfAccessOk());
 
       // Withdrawal txn: the FINAL user state after this batch must equal
       // the pre-balance minus exactly this amount (>= 0), the post-batch
@@ -368,7 +411,7 @@ service cloud.firestore {
       }
 
       // Ledger entries are immutable: only the three verified creations.
-      allow create: if (isSelf(email) && withdrawalTxnOk())
+      allow create: if (isSelf(email) && selfAccessOk() && withdrawalTxnOk())
                    || (isAdmin() && (earningTxnOk() || reversalTxnOk()));
 
       allow update: if false;
@@ -469,12 +512,14 @@ service cloud.firestore {
     /* --------------------------- /meta/committee ------------------------ */
 
     match /meta/committee {
-      // The committee balance is shown to all signed-in users (public fund).
-      allow get: if signedIn();
+      // The committee balance is shown to authorized students (username
+      // identifiers, or explicitly authorized legacy accounts) and admins.
+      // A legacy account on hold cannot read the fund total.
+      allow get: if studentAccessOk() || isAdmin();
       allow list: if false;
 
       // Bootstrap at zero only (idempotent app init).
-      allow create: if signedIn()
+      allow create: if (studentAccessOk() || isAdmin())
         && request.resource.data.balancePaise == 0
         && request.resource.data.balance == 0
         && request.resource.data.keys().hasOnly(['balancePaise', 'balance']);
@@ -522,6 +567,22 @@ service cloud.firestore {
 
       allow update: if isAdmin() && (creditOk() || reversalCreditOk());
 
+      allow delete: if false;
+    }
+
+    /* ------------------ legacy real-email authorizations ---------------- */
+
+    // The explicit "otherwise authorized" route for a legacy real-email
+    // student (Option B). A document here lets that account use the student
+    // paths above, but ONLY when its authorized field is true. Created,
+    // changed or deleted ONLY by an admin in the Firebase console or an
+    // admin SDK script (both bypass rules). Clients can never write it, and
+    // only admins can read it.
+    match /legacyAuthorizations/{email} {
+      allow get: if isAdmin();
+      allow list: if isAdmin();
+      allow create: if false;
+      allow update: if false;
       allow delete: if false;
     }
 

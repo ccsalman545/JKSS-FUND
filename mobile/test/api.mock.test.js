@@ -767,6 +767,15 @@ let job1Id, job2Id;
     eq(d.balancePaise, 900, 'balance preserved');
   });
 
+  await check('access gate: a permission-denied profile read is recognised (both SDK spellings); other errors are not', async () => {
+    const { isAccessDenied } = loadApi();
+    ok(isAccessDenied({ code: 'firestore/permission-denied' }), 'react-native-firebase code');
+    ok(isAccessDenied({ code: 'permission-denied' }), 'web SDK code');
+    ok(!isAccessDenied({ code: 'firestore/unavailable' }), 'a network error is not an access denial');
+    ok(!isAccessDenied(new Error('boom')), 'a plain error is not an access denial');
+    ok(!isAccessDenied(null), 'null is not an access denial');
+  });
+
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail === 0 ? 0 : 1);
 })().catch((e) => {

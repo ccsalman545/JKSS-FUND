@@ -11,7 +11,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { auth } from '../firebase';
-import { api } from '../api';
+import { api, isAccessDenied } from '../api';
 
 const AuthContext = createContext();
 
@@ -23,6 +23,9 @@ export const AuthProvider = ({ children }) => {
   // Signed in but NO pre-authorized profile doc (students must be
   // pre-authorized by the admin; see ensureProfile).
   const [unauthorized, setUnauthorized] = useState(false);
+  // true = Firestore denied the profile read (account not enabled), not merely
+  // "no profile document". Only meaningful while `unauthorized` is true.
+  const [accessDenied, setAccessDenied] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -44,13 +47,22 @@ export const AuthProvider = ({ children }) => {
           if (profile) {
             setUser(profile);
             setUnauthorized(false);
+            setAccessDenied(false);
           } else {
             setUser(null);
             setUnauthorized(true);
+            setAccessDenied(false);
           }
           setToken(fbUser.email);
         } catch (e) {
-          setUser(null); setToken(null); setUnauthorized(false);
+          if (isAccessDenied(e)) {
+            // Firestore refused the read: this account is not enabled (for
+            // example a legacy real-email student on hold). Show that state
+            // instead of silently returning to the login screen.
+            setUser(null); setToken(fbUser.email); setUnauthorized(true); setAccessDenied(true);
+          } else {
+            setUser(null); setToken(null); setUnauthorized(false); setAccessDenied(false);
+          }
         }
       } else {
         setUser(null); setToken(null); setUnauthorized(false);
@@ -91,8 +103,8 @@ export const AuthProvider = ({ children }) => {
   };
 
   const value = useMemo(
-    () => ({ token, user, loading, biometricSupported, unauthorized, login, logout, promptBiometric, updateProfile, changePassword }),
-    [token, user, loading, biometricSupported, unauthorized]
+    () => ({ token, user, loading, biometricSupported, unauthorized, accessDenied, login, logout, promptBiometric, updateProfile, changePassword }),
+    [token, user, loading, biometricSupported, unauthorized, accessDenied]
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

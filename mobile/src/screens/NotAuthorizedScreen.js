@@ -17,7 +17,7 @@ import { useTheme } from '../context/ThemeContext';
 import { APP_NAME } from '../config';
 
 export default function NotAuthorizedScreen() {
-  const { logout, token } = useAuth();
+  const { logout, token, accessDenied } = useAuth();
   const { theme } = useTheme();
 
   return (
@@ -27,10 +27,11 @@ export default function NotAuthorizedScreen() {
           <View style={styles.iconWrap}>
             <Ionicons name="hourglass-outline" size={32} color="#fff" />
           </View>
-          <Text style={styles.title}>Awaiting admin authorization</Text>
+          <Text style={styles.title}>{accessDenied ? 'Account not enabled' : 'Awaiting admin authorization'}</Text>
           <Text style={styles.body}>
-            You are signed in, but this account is not on the fund's student roster yet.
-            Ask the admin to add you (Students → Add student). Then sign in again.
+            {accessDenied
+              ? 'This account is not enabled for JKSS-FUND, so balances and transactions are not available. Contact the administrator.'
+              : "You are signed in, but this account is not on the fund's student roster yet. Ask the admin to add you (Students → Add student). Then sign in again."}
           </Text>
           <Text style={styles.mono} numberOfLines={1}>{token || ''}</Text>
 

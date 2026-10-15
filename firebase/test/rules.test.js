@@ -10,6 +10,10 @@
 //   * an unauthorized synthetic account can read/write nothing,
 //   * withdrawals/credits/reversals work with synthetic identifiers,
 //   * nothing was loosened to make the new login work.
+// Section 14 proves the held-account gate: a real-email account with no
+// legacyAuthorizations document (a legacy student on hold) reads and writes
+// no financial data through any path, while admin reconciliation and the
+// username path are unaffected.
 //
 // Runs the DEPLOYED rules (firebase/firestore.rules) inside the real
 // Firestore emulator (production rules engine) via the official
@@ -33,7 +37,7 @@ const {
 } = require('@firebase/rules-unit-testing');
 const {
   doc, setDoc, getDoc, updateDoc, deleteDoc, collection, getDocs,
-  writeBatch,
+  collectionGroup, writeBatch,
 } = require('firebase/firestore');
 
 const RULES = fs.readFileSync(path.join(__dirname, '..', 'firestore.rules'), 'utf8');
@@ -69,6 +73,11 @@ async function seed() {
     await setDoc(doc(db, 'users/' + B), {
       email: B, role: 'student', full_name: 'B', balancePaise: 4000, balance: 40, txnSeq: 0,
     });
+    // A and B are real-email legacy students that an admin has EXPLICITLY
+    // authorized (Option B "otherwise authorized"). Without these documents
+    // they are on hold and the access gate denies them everything.
+    await setDoc(doc(db, 'legacyAuthorizations/' + A), { email: A, authorized: true });
+    await setDoc(doc(db, 'legacyAuthorizations/' + B), { email: B, authorized: true });
     await setDoc(doc(db, 'meta/committee'), { balancePaise: 1000, balance: 10 });
     // Pre-v3.1 top-level ledger entry (audit-only path).
     await setDoc(doc(db, 'transactions/legacy1'), { type: 'earning', amount: 10 });
@@ -962,17 +971,230 @@ test('v3.0: an admin cannot create a synthetic profile whose email field != its 
   })));
 });
 
-test('v3.0: legacy real-email profiles and synthetic ones coexist without extra privilege', async () => {
+test('v3.0: a legacy real-email student with NO authorization is on hold: no student rights at all', async () => {
   await seedSynthetic();
   const db = adminCtx().firestore();
-  // The admin can still pre-authorize a legacy real-email student...
+  // The admin can still write a legacy profile document (admin path)...
   await assertSucceeds(setDoc(doc(db, 'users/legacy.student@jkss.in'), {
     email: 'legacy.student@jkss.in', role: 'student', full_name: 'Legacy Student', avatar: '',
     balancePaise: 0, balance: 0, txnSeq: 0, createdAt: 1,
   }));
-  // ...and that legacy student gains exactly the same (minimal) rights.
+  // ...but without an authorization document the account reads nothing of its own.
   const legacy = authed('legacy.student@jkss.in').firestore();
-  await assertSucceeds(getDoc(doc(legacy, 'users/legacy.student@jkss.in')));
+  await assertFails(getDoc(doc(legacy, 'users/legacy.student@jkss.in')));
   await assertFails(getDoc(doc(legacy, 'users/' + S1)));
   await assertFails(setDoc(doc(legacy, 'users/' + S3), PLANNED_SHAPE));
 });
+
+/* =====================================================================
+   14. Held legacy accounts (Option B): the access gate
+   A real-email account with no legacyAuthorizations document is ON HOLD.
+   It must not read or write any financial data, through any path. Admin
+   access (reconciliation, legitimate job reversal) is unchanged.
+   ===================================================================== */
+
+const H = 'held.legacy@gmail.com';            // real email, NOT authorized
+const H_OK = 'authorized.legacy@gmail.com';   // same shape, WITH authorization
+
+// A held legacy profile exactly as the production data can look: a balance,
+// a txnSeq, and a ledger entry. No authorization document.
+async function seedHeld(email = H) {
+  await seed();
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await setDoc(doc(db, 'users/' + email), {
+      email, role: 'student', full_name: 'Held Legacy', avatar: '',
+      balancePaise: 7500, balance: 75, txnSeq: 3,
+    });
+    await setDoc(doc(db, 'users/' + email + '/transactions/t-old'), {
+      type: 'earning', studentId: email, jobId: 'j-held', amountPaise: 1485, amount: 14.85,
+      description: 'Old job', createdAt: 1,
+    });
+  });
+}
+
+// The original job whose only allocation belongs to H (for a reversal test).
+async function seedHeldJob(email = H) {
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), 'jobs/j-held'), {
+      name: 'Held job', date: '2026-01-02', status: 'active',
+      amountPaise: 1650, committeeSharePaise: 165, studentSharePaise: 1485,
+      studentCount: 1, allocations: { [email]: 1485 },
+    });
+  });
+}
+
+async function setAuthorization(email, value) {
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), 'legacyAuthorizations/' + email), value);
+  });
+}
+
+test('held legacy: CANNOT read its own profile (the balance is financial data)', async () => {
+  await seedHeld();
+  await assertFails(getDoc(doc(authed(H).firestore(), 'users/' + H)));
+});
+
+test('held legacy: CANNOT list or read its own ledger', async () => {
+  await seedHeld();
+  const db = authed(H).firestore();
+  await assertFails(getDocs(collection(db, 'users/' + H + '/transactions')));
+  await assertFails(getDoc(doc(db, 'users/' + H + '/transactions/t-old')));
+});
+
+test('held legacy: CANNOT read the ledger through a collection-group query', async () => {
+  await seedHeld();
+  await assertFails(getDocs(collectionGroup(authed(H).firestore(), 'transactions')));
+});
+
+test('held legacy: CANNOT withdraw (the atomic balance + companion txn batch is denied)', async () => {
+  await seedHeld();
+  const db = authed(H).firestore();
+  await assertFails(withdrawalBatch(db, H, 6500, 4, 1000).commit());
+});
+
+test('held legacy: CANNOT withdraw by writing only the companion ledger entry', async () => {
+  await seedHeld();
+  const db = authed(H).firestore();
+  await assertFails(setDoc(doc(db, 'users/' + H + '/transactions/w_' + H + '_4'), {
+    type: 'withdrawal', studentId: H, amountPaise: 1000, amount: 10, seq: 4,
+  }));
+});
+
+test('held legacy: CANNOT withdraw by a balance-only or pair-shaped user update', async () => {
+  await seedHeld();
+  const db = authed(H).firestore();
+  await assertFails(updateDoc(doc(db, 'users/' + H), { balancePaise: 999999, balance: 9999.99 }));
+  await assertFails(updateDoc(doc(db, 'users/' + H), {
+    balancePaise: 6500, balance: 65, txnSeq: 4, withdrawalTxnId: 'w_' + H + '_4',
+  }));
+});
+
+test('held legacy: CANNOT change its profile (full_name, role, txnSeq) or delete it', async () => {
+  await seedHeld();
+  const db = authed(H).firestore();
+  await assertFails(updateDoc(doc(db, 'users/' + H), { full_name: 'Renamed' }));
+  await assertFails(updateDoc(doc(db, 'users/' + H), { role: 'admin' }));
+  await assertFails(updateDoc(doc(db, 'users/' + H), { txnSeq: 0 }));
+  await assertFails(deleteDoc(doc(db, 'users/' + H)));
+});
+
+test('held legacy: CANNOT write its own ledger entries of any type', async () => {
+  await seedHeld();
+  const db = authed(H).firestore();
+  await assertFails(setDoc(doc(db, 'users/' + H + '/transactions/earn_x_' + H), {
+    type: 'earning', studentId: H, jobId: 'x', amountPaise: 100, amount: 1,
+  }));
+  await assertFails(setDoc(doc(db, 'users/' + H + '/transactions/rev_x_' + H), {
+    type: 'reversal', studentId: H, jobId: 'x', amountPaise: 100, amount: 1,
+  }));
+});
+
+test('held legacy: CANNOT bypass the hold by bundling a withdrawal with a committee write', async () => {
+  await seedHeld();
+  const db = authed(H).firestore();
+  const b = withdrawalBatch(db, H, 6500, 4, 1000);
+  b.update(doc(db, 'meta/committee'), { balancePaise: 1100, balance: 11 });
+  await assertFails(b.commit());
+});
+
+test('held legacy: CANNOT read the committee balance or write it', async () => {
+  await seedHeld();
+  const db = authed(H).firestore();
+  await assertFails(getDoc(doc(db, 'meta/committee')));
+  await assertFails(updateDoc(doc(db, 'meta/committee'), { balancePaise: 0, balance: 0 }));
+});
+
+test('held legacy: CANNOT read jobs or write any job', async () => {
+  await seedHeld();
+  await seedHeldJob();
+  const db = authed(H).firestore();
+  await assertFails(getDocs(collection(db, 'jobs')));
+  await assertFails(getDoc(doc(db, 'jobs/j-held')));
+  await assertFails(updateDoc(doc(db, 'jobs/j-held'), { status: 'reversed', reversedAt: 1 }));
+  await assertFails(setDoc(doc(db, 'jobs/j-new'), {
+    name: 'x', date: '2026-10-01', status: 'active', amountPaise: 1000,
+    committeeSharePaise: 100, studentSharePaise: 900, studentCount: 1, allocations: { [H]: 900 },
+  }));
+});
+
+test('held legacy: CANNOT authorize itself (no client can write legacyAuthorizations)', async () => {
+  await seedHeld();
+  const db = authed(H).firestore();
+  await assertFails(setDoc(doc(db, 'legacyAuthorizations/' + H), { email: H, authorized: true }));
+  // ...and so the withdrawal is still denied afterwards.
+  await assertFails(withdrawalBatch(db, H, 6500, 4, 1000).commit());
+});
+
+test('held legacy: CANNOT read the authorization collection', async () => {
+  await seedHeld();
+  await assertFails(getDoc(doc(authed(H).firestore(), 'legacyAuthorizations/' + H)));
+  await assertFails(getDocs(collection(authed(H).firestore(), 'legacyAuthorizations')));
+});
+
+test('held legacy: a real-email account whose email only CONTAINS the synthetic suffix is still held', async () => {
+  const spoof = 'mallory@students.jkss-fund.invalid.example.com';
+  await seedHeld(spoof);
+  const db = authed(spoof).firestore();
+  await assertFails(getDoc(doc(db, 'users/' + spoof)));
+  await assertFails(withdrawalBatch(db, spoof, 6500, 4, 1000).commit());
+});
+
+test('held legacy: admin CANNOT authorize an account through the client (console/admin SDK only)', async () => {
+  await seedHeld();
+  const db = adminCtx().firestore();
+  await assertFails(setDoc(doc(db, 'legacyAuthorizations/' + H), { email: H, authorized: true }));
+});
+
+test('held legacy: admin reconciliation still reads its profile, ledger and the user list', async () => {
+  await seedHeld();
+  const db = adminCtx().firestore();
+  await assertSucceeds(getDoc(doc(db, 'users/' + H)));
+  await assertSucceeds(getDocs(collection(db, 'users/' + H + '/transactions')));
+  await assertSucceeds(getDocs(collection(db, 'users')));
+});
+
+test('held legacy: admin can still reverse a job allocated to it (legitimate reconciliation)', async () => {
+  await seedHeld();
+  await seedHeldJob();
+  const db = adminCtx().firestore();
+  const b = jobReversalBatch(db, 'j-held', { [H]: 1485 }, { [H]: 7500 }, { committeeNewPaise: 835 });
+  await assertSucceeds(b.commit());
+});
+
+test('held legacy: an AUTHORIZED real-email account can read its profile and withdraw', async () => {
+  await seedHeld(H_OK);
+  await setAuthorization(H_OK, { email: H_OK, authorized: true });
+  const db = authed(H_OK).firestore();
+  await assertSucceeds(getDoc(doc(db, 'users/' + H_OK)));
+  await assertSucceeds(withdrawalBatch(db, H_OK, 6500, 4, 1000).commit());
+});
+
+test('held legacy: REVOKING the authorization (authorized: false) holds the account again', async () => {
+  await seedHeld(H_OK);
+  await setAuthorization(H_OK, { email: H_OK, authorized: false });
+  const db = authed(H_OK).firestore();
+  await assertFails(getDoc(doc(db, 'users/' + H_OK)));
+  await assertFails(withdrawalBatch(db, H_OK, 6500, 4, 1000).commit());
+});
+
+test('held legacy: an authorization document WITHOUT authorized == true does not authorize', async () => {
+  await seedHeld(H_OK);
+  await setAuthorization(H_OK, { email: H_OK });
+  await assertFails(getDoc(doc(authed(H_OK).firestore(), 'users/' + H_OK)));
+});
+
+test('held legacy: an authorization for a DIFFERENT email does not authorize this account', async () => {
+  await seedHeld();
+  await setAuthorization(H_OK, { email: H_OK, authorized: true });
+  await assertFails(withdrawalBatch(authed(H).firestore(), H, 6500, 4, 1000).commit());
+});
+
+test('held legacy: the username (synthetic) path is NOT affected by the gate', async () => {
+  await seedSynthetic();
+  const db = authed(S1).firestore();
+  await assertSucceeds(getDoc(doc(db, 'users/' + S1)));
+  await assertSucceeds(getDoc(doc(db, 'meta/committee')));
+  await assertSucceeds(withdrawalBatch(db, S1, 240000, 1, 10000).commit());
+});
+
