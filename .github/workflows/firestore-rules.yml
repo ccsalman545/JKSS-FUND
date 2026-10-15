@@ -36,7 +36,17 @@ jobs:
         run: npm ci
       - name: Run rules tests in the Firestore emulator
         working-directory: firebase
-        run: firebase emulators:exec --only firestore "node test/rules.test.js"
+        run: |
+          set -o pipefail
+          firebase emulators:exec --only firestore "node test/rules.test.js" 2>&1 | tee rules-test-output.txt
+          # Publish the full output in the job summary so failures are
+          # visible without downloading raw logs.
+          {
+            echo '## Firestore rules test output'
+            echo '```'
+            cat rules-test-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   accounting:
     name: Accounting + api orchestration tests
