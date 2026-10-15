@@ -373,6 +373,12 @@ their plan status is `create` or `exists`, with no legacy match, no ambiguity
 and no roster hold. `apply` creates only those students and reports the held
 ones.
 
+**Enforcement by the rules (the access gate).** After the gated deploy (§8 step 7), a
+real-email account on hold cannot read or change any financial data: no profile read,
+no ledger read, no withdrawal, no committee read. This holds even if the app is edited.
+Until that deploy, the live database still uses its current rules, so a held account
+keeps the access it has today. The gate is described in `SECURITY_REVIEW.md` §3.2a.
+
 **Frozen profiles (decision D-1, decided 2026-10-15).** A profile is **frozen** when
 it is any of these:
 
@@ -387,10 +393,7 @@ there. Eligible students' own profiles and unmatched former profiles keep the no
 backfill. Covered by `tools/provision/test/plan.test.js` (D-1 checks) and
 `tools/provision/test/apply.test.js` (the real `apply` path, with Firebase stubbed).
 
-**Residual risk.** The freeze is enforced by the tool, not by the rules. After the rules
-are deployed (§8 step 7), a frozen legacy document that already has an integer `txnSeq`
-can still be changed by its holder, if they sign in with the legacy email. Closing that
-needs a separate, reviewed rules change.
+**Residual risk.** The freeze is enforced by the tool. The rules gate (above) separately stops a held account from changing its own record, but only once the gated deploy has happened.
 
 **How the hold list works (two mechanisms, both enforced in `apply`):**
 
@@ -417,7 +420,7 @@ only after the review checklist below is complete.
 |---|---|---|
 | **B. Hold back** | **In force** | Nothing is created, changed or migrated for the student. (See above.) |
 | **A. Re-key with backup** | Not started; needs review | `migrate-identity` (§7.3) copies the profile and whole ledger to the username identity, moves the balance with a ledger entry, and tombstones the old document (never deletes it). |
-| **C. Stay on the real email** | Available | The login form accepts an email, so the old profile keeps working and no data moves. Record the link with `legacyIdentifier`. |
+| **C. Stay on the real email** | Available only with an owner-approved authorization | After the rules gate is deployed (§8 step 7), the account works only when a `legacyAuthorizations/<email>` document with `authorized: true` exists. The owner creates it in the console. No data moves. Record the link with `legacyIdentifier`. |
 | **D. Fresh identity via `ignoreLegacy`** | **Not chosen; not recommended** | Creates a second profile beside the legacy one. That is the duplicate and orphan risk this plan exists to prevent. It needs explicit approval per student. |
 
 > Step 6 of §8 backfills `txnSeq: 0` only on profiles that are not frozen. Held legacy
@@ -497,7 +500,7 @@ approval, and every rollback.
 | 4 | Keep legacy-held students on hold (Option B) | No | held list confirmed and recorded in `roster.json` |
 | 5 | Verify the admin profiles | **Read only** | both admin docs as expected (otherwise stop) |
 | 6 | `txnSeq: 0` backfill + eligible-student provisioning | **Yes — writes** | written approval; the FROZEN list reviewed |
-| 7 | Deploy the audited Firestore rules | **Yes — production rules** | every prerequisite ticked; written approval; rollback baseline saved |
+| 7 | Deploy the audited Firestore rules (includes the held-account gate) | **Yes — production rules** | every prerequisite ticked; the authorization decision made; written approval; rollback baseline saved |
 | 8 | Build the APK and run a controlled smoke test | Yes, controlled | APK built from the merge commit; smoke checklist passed |
 
 Non-negotiable throughout: no student account is created, no password is reset,
@@ -554,6 +557,9 @@ Review the **complete** report, not only the summary:
 7. **The live ruleset.** Open Firebase console → Firestore → Rules and read it
    (read-only). Record its release timestamp and copy its text into the release
    log. This is the rollback baseline. The repository cannot see what is live.
+8. **Every real-email profile** (matched or unmatched). After the gated deploy, each one is
+   denied all financial access unless an owner-created authorization document exists
+   (step 7, SECURITY_REVIEW §3.2a). Record the list in the release log.
 
 Gate: the report is saved outside Git and the owner has signed off on it.
 
@@ -569,6 +575,9 @@ Gate: the report is saved outside Git and the owner has signed off on it.
   students.
 * A hold is lifted only through the per-student review checklist in §7.2, as a
   separate recorded change. It is never lifted as part of this order.
+* After the gated deploy (step 7) the rules deny held accounts: they cannot read or change
+  any balance or ledger. Do not create a `legacyAuthorizations` document for a held account
+  unless its §7.2 review has concluded and the owner has approved it in writing.
 * Verified students (status `create` or `exists`, no legacy match, no hold) remain
   eligible for step 6.
 
@@ -600,10 +609,10 @@ of students on a roster hold, and ambiguous candidates. A held record stays exac
 it is until it is reviewed. The tool checks this before any write (`backfillTargets`),
 and refuses to run if a frozen id reaches the backfill list.
 
-**Residual risk:** this protection is in the tool, not in the rules. After step 7, a
-frozen legacy document that already has an integer `txnSeq` can still be changed by its
-holder, if they sign in with the legacy email. Closing that would need a separate,
-reviewed rules change, which this order does not include.
+**Residual risk:** this protection is in the tool. The rules gate (step 7) separately
+stops a held account from changing its own record, but only once the gated deploy has
+happened. Until step 7 is done, the live rules are not gated, so a held account keeps its
+current access.
 
 Run only after written approval:
 
@@ -633,6 +642,13 @@ the rules' starting counter, so it is left in place. No money moved in this step
 
 **All prerequisites must be ticked. Any unticked item stops the step:**
 
+- [ ] The `Firestore rules` CI job on the merge commit is green, and its rules suite reports
+      111 passed, 0 failed. Section 14 of `firebase/test/rules.test.js` covers the held-account gate.
+- [ ] The owner has decided which real-email accounts keep access after the deploy. The default is
+      **none**: every real-email account without an authorization document is denied from the moment
+      the deploy completes. For each account the owner keeps, create `legacyAuthorizations/<email>`
+      = `{ email, authorized: true }` in the console **before** the deploy. Each one is a separate,
+      approved production write.
 - [ ] The merge commit from step 1 is the one being deployed, and its `Firestore rules`
       CI job (rules unit tests) is green. Deploy from a clean checkout of that commit,
       never from a dirty tree.
@@ -661,6 +677,9 @@ Rollback: in the console's Rules tab, republish the baseline release from the
 release history. If that is unavailable, redeploy the saved baseline file. Do not
 roll back by editing data.
 
+**A rollback re-opens held accounts.** The previous rules do not gate them. Roll back only
+with written owner approval, and record that approval in the release log.
+
 ### Step 8 — build the APK and run a controlled smoke test
 
 Build (owner's EAS account; this repository creates no credentials):
@@ -686,7 +705,8 @@ advance:
 5. The student sees the split, and the balance updates live.
 6. Admin reverses the test job. Balances return to their starting values exactly.
 7. Held students still have no account and no profile change, compared with the
-   step 3 snapshot.
+   step 3 snapshot. If the owner approves and that student consents, one held account signs
+   in and sees "Account not enabled" with no balance. Do not use anyone else's account.
 8. No password-reset or verification email was sent to any synthetic identifier.
 
 Record each result in the release log. Any failure: stop, and roll back under step 7.
@@ -708,7 +728,7 @@ change only at step 7, and the held students change only through §7.2.
 | `tools/provision/test/plan.test.js` | local + CI | **51 passed, 0 failed** — includes the D-1 frozen-profile checks; roster-hold validation and enforcement (incl. the explicit hold on a legacy-matched student),  roster → username, collision rules, ambiguity/weak-match handling, held-back students, admin preservation, safety gates, CLI parsing, **docs↔code mapping drift**, and **docs↔CLI drift** (every command/flag printed in these docs must exist in the tool) |
 | `tools/provision/test/apply.test.js` | local + CI | **4 passed, 0 failed** — D-1 through the real `apply` path (Firebase stubbed): a held legacy profile gets no Auth account, no profile and no `txnSeq`; eligible and former profiles are still backfilled; a roster hold freezes too |
 | `tools/provision/test/passwords.test.js` | local + CI | **15 passed, 0 failed** — CSPRNG passwords (20k uniqueness), unambiguous alphabet, policy compliance, 0600 credentials file, never-overwrite |
-| `firebase/test/rules.test.js` | CI (`Firestore rules`, emulator) | **89 passed, 0 failed** in the production rules engine (14 new synthetic-identifier scenarios: pre-authorization, unauthorized-account lockout, withdrawals/credits/reversals with synthetic ids, no rules loosening) |
+| `firebase/test/rules.test.js` | CI (`Firestore rules`, emulator) | **111 scenarios, 0 failed** in the production rules engine (section 14: 22 held-account gate scenarios; CI run `38729530740` succeeded on `cd63dbe`). Before the gate: 89 passed (14 new synthetic-identifier scenarios: pre-authorization, unauthorized-account lockout, withdrawals/credits/reversals with synthetic ids, no rules loosening) |
 | `tools/provision/test/emulator.test.js` | CI (`provisioning-e2e`, Auth+Firestore emulators) | **31 passed, 0 failed** — a dry run creates no Auth user and touches no document, 23 accounts created idempotently, admin account+password and both admin docs preserved, balances/ledgers byte-identical, no plaintext password in Firestore, valid/invalid password sign-in, unauthorized student has no profile, reset-password, identity migration with backup, safety gates |
 
 Exact commands (also in `SECURITY_REVIEW.md` §5):

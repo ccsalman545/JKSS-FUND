@@ -102,7 +102,9 @@ runbook, the migration options, and the manual deployment checklist.
   planner lists these under `FROZEN` with the reason. `apply` takes its backfill ids
   from `backfillTargets()` and refuses before any write if a frozen id is present. A
   frozen legacy document is left exactly as it is, until its owner review (see
-  `docs/USERNAME_LOGIN.md` §7.2). This is a tool guard, not a rules guard.
+  `docs/USERNAME_LOGIN.md` §7.2). This is a tool guard, not a rules guard. The rules gate (SECURITY_REVIEW §3.2a) is the separate
+  control that stops a held account's own access after the rules are deployed. The tool never creates
+  a `legacyAuthorizations` document.
 * Touch either admin profile, or the admin Auth account/password.
 * Store a password in Firestore or in Git.
 * Run against production by accident (the typo guard) or `verify-identifier`

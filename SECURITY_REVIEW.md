@@ -141,7 +141,7 @@ rules**; it added:
 | `mobile/test/identity.test.js` | **New** — 63 executed tests (normalization, collisions, identifier mapping, policy, 20k fuzz) |
 | `mobile/test/api.mock.test.js` | Extended to **37 tests** (username login with real `auth/*` codes, identical error text for unknown-user vs wrong-password, ledger identity) |
 | `tools/provision/**` | **New** — the local provisioning tool + 3 suites (plan 36, passwords 15, emulator E2E 31) |
-| `firebase/test/rules.test.js` | **89 scenarios** (14 new synthetic-identifier ones) — rules text unchanged |
+| `firebase/test/rules.test.js` | **111 scenarios** (89 before the held-account gate, plus 22 in section 14 — see §3.2a) |
 | `.github/workflows/username-login.yml` | **New** — node suites + Auth/Firestore emulator E2E job |
 | `docs/USERNAME_LOGIN.md`, `tools/provision/README.md`, `README.md`, `PRIVACY_POLICY.md`, `mobile/PLAY_STORE.md`, `SECURITY_REVIEW.md`, `firebase/README.md` | Documentation for the above |
 
@@ -216,6 +216,9 @@ zero balances, `email` == doc ID, `txnSeq` absent or exactly 0 — used both
 for admin create and for the pre-authorization **activation** update), plus
 per-batch helpers implementing the protocol in §3.2.
 
+Access-gate helpers (held legacy accounts, §3.2a): `usernameIdentifier(e)`,
+`legacyAuthorized(e)`, `studentAccessOk()`, `selfAccessOk()`.
+
 ### 3.2 Path-by-path
 
 - **`/users/{email}`**
@@ -286,6 +289,60 @@ per-batch helpers implementing the protocol in §3.2.
 - **`/transactions/{txnId}`** (legacy) — read: admin; all writes denied
 - **Catch-all** — explicit deny for everything else
 
+### 3.2a Student access gate (held legacy accounts)
+
+**Threat.** Before this gate, a real-email account that had a `users/{email}`
+profile (a legacy student on hold, Option B) could read its own balance and ledger,
+and could withdraw from its own balance. The rules only asked "is this my own
+document?", so the hold existed only in the provisioning tool.
+
+**Rule.** A signed-in account may use a student financial path only when:
+
+1. its Auth email matches `^[a-z0-9._-]+@students[.]jkss-fund[.]invalid$` (the v3.0
+   username identifier); **or**
+2. `legacyAuthorizations/{email}` exists with `authorized == true`. Only an admin
+   can read that collection. Clients cannot write it. The owner creates it in the
+   console or with an admin SDK script, which is a manual, approved production write.
+
+Any other real-email account is held. It reads and writes no financial data.
+
+**Gated paths** (`studentAccessOk()` / `selfAccessOk()`):
+
+| Path | Before | After |
+|---|---|---|
+| `users/{self}` get | self | self **and gate** (admin unchanged) |
+| `users/{self}` update (profile or withdrawal) | self | self **and gate** |
+| `users/{self}/transactions` get/list | self | self **and gate** |
+| `users/{self}/transactions` create (withdrawal) | self | self **and gate** |
+| `meta/committee` get / create | any signed-in account | **gate** (username accounts still read it) |
+| `legacyAuthorizations/{email}` | (none) | admin read only; no client write |
+
+Admin paths are unchanged: user list and any profile or ledger read, job credit and
+reversal, reconciliation, the legacy `/transactions` audit read. `selfAccessOk()` also
+keeps an admin's own self-access as it was.
+
+**Tests.** `firebase/test/rules.test.js` §14 (22 scenarios, run in CI by the production
+rules engine) covers: no read or write of the profile, ledger, committee or jobs; no
+withdrawal by any shape (atomic batch, companion-only, balance-only, bundled with a
+committee write); no self-authorization; a look-alike domain is still held; revoking,
+a missing `authorized` field, or another email's authorization keeps the account
+held. The authorized account works, admin reconciliation works, a legitimate job
+reversal of a held allocation still succeeds, and the username path is unchanged.
+
+**Residuals (honest list).**
+1. **Not in force until deployed.** The live project still runs its existing ruleset.
+   Until the gated deploy (runbook §8 step 7), held accounts keep their current access.
+2. **Owner decision needed before deploy.** Any real-email account without an
+   authorization document is denied as soon as the rules are live. That includes
+   unmatched former students as well as held ones. Each account the owner wants to keep
+   needs an authorization document first.
+3. **Rollback re-opens held accounts.** Restoring the previous rules removes the gate.
+4. **Client sign-up.** If Email/Password sign-up is open in the project, a client can
+   create an Auth account for any valid address with the public web API key. Such an
+   account can have a synthetic identifier at most. It still needs an admin-created
+   profile to reach any financial data, and the gate does not change that. The owner
+   should check the Auth sign-up setting in the console.
+
 ### 3.3 Schema / data-model changes
 
 - Money: integer **paise** fields (`balancePaise`, `amountPaise`,
@@ -344,6 +401,8 @@ admin-trust-root or cosmetic):
    (the fund retains the difference, detectable by auditing the job's
    allocations against the ledger), never over-allocate.
 3. **The admin token is the trust root** (see §7.2).
+4. **The held-account gate depends on the deployed ruleset** (§3.2a). Until the gated
+   deploy, held real-email accounts keep their current access in the live project.
 
 ---
 
@@ -458,7 +517,7 @@ node test/passwords.test.js      # 15 passed, 0 failed  CSPRNG + credentials fil
 cd firebase
 npm ci
 firebase emulators:exec --project jkss-fund-local --only firestore "node test/rules.test.js"
-#   → 89 passed, 0 failed
+#   → 111 passed, 0 failed
 firebase emulators:exec --project jkss-fund-e2e --only firestore,auth \
   "node ../tools/provision/test/emulator.test.js"
 #   → 31 passed, 0 failed  (real accounts created/signed-in/deleted in the emulator)
@@ -479,7 +538,8 @@ Both jobs fail unless the output ends with `N passed, 0 failed`.
 > Deploying the rules is **not** part of merging this PR or of setting up username
 > login. It happens once, in the order given in the runbook §8, after the admin
 > profile check (step 5) and the `txnSeq` backfill (step 6). The command is shown here
-> for reference only. Do not run it earlier.
+> for reference only. Do not run it earlier. Deploying also turns on the held-account gate
+> (§3.2a): real-email accounts are denied unless an owner-created authorization document exists.
 ```bash
 cd firebase
 firebase deploy --only firestore --project jkss-fund   # runbook §8 step 7 only
@@ -614,12 +674,12 @@ real-money movement on the current architecture.
   is reset, no record is migrated, until each is reviewed (`docs/USERNAME_LOGIN.md`
   §7.2). An explicit `"hold": true` + `"holdReason"` in `roster.json` blocks
   creation even without a legacy profile.
+  **Enforced by the rules (§3.2a)** after the gated deploy: a held real-email account
+  reads and writes no financial data. Until that deploy, the live project still runs its
+  existing rules and held accounts keep their current access.
   **Frozen (decision D-1):** a held legacy profile, a profile keyed to a student who
   is not being created, and an ambiguous candidate are never backfilled with
-  `txnSeq: 0`; `apply` enforces this before any write. Residual risk: this is a tool
-  guard, not a rules guard. After the rules deploy, a frozen legacy document that
-  already has `txnSeq` can still be changed by its holder who signs in with the legacy
-  email. Closing that needs a separate, reviewed rules change.
+  `txnSeq: 0`; `apply` enforces this before any write. Residual risk: this is a tool guard. The rules gate (§3.2a) separately stops a held account's own access, but only once the gated deploy has happened.
 - **iOS / Hosting** — out of scope per the task.
 - **`removedAt` tombstones are never un-set** — re-adding a removed student
   requires a fresh identity (or console edit). Product decision.
@@ -850,6 +910,7 @@ account; the completed security and accounting work stays intact.
 | Job | Run | Result |
 |---|---|---|
 | Rules unit tests (Firestore emulator, production rules engine) | `38717587168` | **SUCCESS — 89 passed, 0 failed** (75 previous + 14 new synthetic-identifier scenarios) |
+| Rules unit tests after the held-account gate (commit `cd63dbe`) | `38729530740` | **SUCCESS** — exit 0, so 0 failed of 111 (89 + 22 section-14 held-account scenarios). The printed count was not readable from the sandbox. The job log and artifact are not downloadable from it. |
 | Accounting + identity + api orchestration | `38717587168` | SUCCESS — 63 identity + 31 accounting + 37 api/login + 36 provisioning plan + 15 password checks (the plan suite now also proves every command/flag printed in the docs exists in the CLI: 39) |
 | Username login (v3.0) → Node suites | `38717587462` | SUCCESS |
 | Username login (v3.0) → Provisioning + login E2E (Auth + Firestore emulators, `firebase-admin`) | `38717587462` | **SUCCESS — 31 passed, 0 failed** |
@@ -875,7 +936,7 @@ touching production.
   docs↔code mapping-drift check and a docs↔CLI check (every `provision.js`
   command and `--flag` an admin could copy out of the docs must exist in the
   parser, and `help` must list every accepted flag).
-* `firebase/test/rules.test.js` — **89 scenarios** in the production rules
+* `firebase/test/rules.test.js` — **89 scenarios** at v3.0 (**111** after the held-account gate, §3.2a) in the production rules
   engine, including 14 new ones that run the engine with synthetic identifiers
   (pre-authorization, unauthorized lockout, withdrawal/credit/reversal with
   synthetic ids, no-loosening checks).
@@ -906,7 +967,8 @@ touching production.
    command is implemented and exercised against the Auth emulator in CI; the
    real-project preflight remains a manual step (§4.5 of
    `docs/USERNAME_LOGIN.md`) and must be run before bulk creation.
-5. **Legacy identities still keyed by a real email** can keep working (the login
-   form accepts an email), but the planner holds those students back so no
-   duplicate profile/balance can be created; migrating them carries the
-   *legacy lien* caveat documented in `docs/USERNAME_LOGIN.md` §7.4.
+5. **Legacy identities still keyed by a real email** are held. Once the gated deploy is
+   done (§3.2a) they are denied all financial access unless the owner has created an
+   authorization document for them. The planner keeps them out of creation, so no
+   duplicate profile or balance is made. Migrating them carries the *legacy lien* caveat
+   documented in `docs/USERNAME_LOGIN.md` §7.4.

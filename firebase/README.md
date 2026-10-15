@@ -30,6 +30,8 @@ The app no longer uses a custom server. All auth, data, and rules live in Fireba
 
 > Do not run this until `docs/USERNAME_LOGIN.md` §8 steps 5 and 6 are complete (admin-profile
 > check, `txnSeq` backfill). It is step 7 of that order.
+> It also turns on the held-account gate: real-email accounts are denied unless an
+> owner-created `legacyAuthorizations/<email>` document exists (SECURITY_REVIEW §3.2a).
 `firebase/.firebaserc` defaults to `jkss-fund` — the real project (verified
 against `mobile/google-services.json`). Emulator runs in CI always pass
 `--project jkss-fund-local` explicitly (a valid lowercase id that can never
@@ -95,7 +97,7 @@ firebase emulators:exec --project jkss-fund-local --only firestore "node test/ru
 ```
 
 The command starts a throwaway local emulator (project `jkss-fund-local`),
-loads `firestore.rules`, runs 89 authorized/unauthorized scenarios (including
+loads `firestore.rules`, runs 111 authorized/unauthorized scenarios (including the held-account gate, section 14) (including
 the v3.0 synthetic student identifiers), and prints a pass/fail summary. It
 never touches your production project.
 

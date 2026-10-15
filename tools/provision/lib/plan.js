@@ -400,8 +400,8 @@ function buildPlan({ roster, live = {}, projectId = null, domain = STUDENT_EMAIL
   //   * named in an ambiguous review (blocking candidate).
   // Frozen profiles get no txnSeq:0 backfill and no other write. Everything else
   // (eligible students' own profiles, unmatched former profiles) keeps the normal
-  // backfill. A held record is protected from this tool; it is not a rules-level
-  // freeze (see docs/USERNAME_LOGIN.md §8 step 6).
+  // backfill. A held record is protected from this tool. The rules gate (SECURITY_REVIEW §3.2a)
+  // separately stops the held account's own access once the rules are deployed.
   const frozenProfiles = new Map(); // profile id -> reason
   students.forEach((e) => {
     if (e.legacyProfileId) {
