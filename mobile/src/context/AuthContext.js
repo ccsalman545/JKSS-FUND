@@ -15,11 +15,16 @@ export const AuthProvider = ({ children }) => {
   const [biometricSupported, setBiometricSupported] = useState(false);
 
   useEffect(() => {
-    GoogleSignin.configure({
-      webClientId: GOOGLE_WEB_CLIENT_ID,
-      androidClientId: GOOGLE_ANDROID_CLIENT_ID,
-      offlineAccess: false,
-    });
+    // Only configure Google Sign-In with real OAuth client IDs — placeholder
+    // IDs would make the native library throw/misbehave at configure time.
+    // Email/password auth is unaffected.
+    if (GOOGLE_SIGNIN_CONFIGURED) {
+      GoogleSignin.configure({
+        webClientId: GOOGLE_WEB_CLIENT_ID,
+        androidClientId: GOOGLE_ANDROID_CLIENT_ID,
+        offlineAccess: false,
+      });
+    }
     (async () => {
       try {
         const compatible = await LocalAuthentication.hasHardwareAsync();

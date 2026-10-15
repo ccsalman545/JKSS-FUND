@@ -1,5 +1,5 @@
 // test/rules.test.js
-// Firestore SECURITY RULES test suite for JKSS-FUND v3.1.
+// Firestore SECURITY RULES test suite for JKSS-FUND v3.2.
 //
 // Runs the DEPLOYED rules (firebase/firestore.rules) inside the real
 // Firestore emulator (production rules engine) via the official
@@ -7,14 +7,10 @@
 // assertSucceeds/assertFails is evaluated by the same engine that runs in
 // production.
 //
-// Prerequisites (one-time, on a machine with Node 18+ and Java 11+):
-//   cd firebase
-//   npm install                 (installs @firebase/rules-unit-testing + firebase)
-//   npm i -g firebase-tools     (provides the emulator)
-//
 // Run (starts a throwaway local emulator, never touches production):
 //   cd firebase
-//   firebase emulators:exec --only firestore "node test/rules.test.js"
+//   npm ci
+//   firebase emulators:exec --project jkss-fund-local --only firestore "node test/rules.test.js"
 //
 // (Equivalent: `firebase emulators:start --only firestore` in one terminal,
 //  then `FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 node test/rules.test.js`.)
@@ -47,7 +43,9 @@ const authed = (email) => env.authenticatedContext('uid-' + email.replace(/[^a-z
 const adminCtx = () => authed(ADMIN);
 const anonCtx = () => env.unauthenticatedContext();
 
-/* Seed a deterministic world (bypasses rules — test setup only). */
+/* Seed a deterministic world (bypasses rules — test setup only).
+   A=5000 paise, B=4000 paise, committee=1000, and job j-old with ORIGINAL
+   allocation history (a MAP {email: paise} — the v3.2 on-disk format). */
 async function seed() {
   await env.clearFirestore();
   await env.withSecurityRulesDisabled(async (ctx) => {
@@ -66,60 +64,79 @@ async function seed() {
     await setDoc(doc(db, 'transactions/legacy1'), { type: 'earning', amount: 10 });
     // A fully-formed job with original allocation history.
     await setDoc(doc(db, 'jobs/j-old'), {
-      name: 'Old job', date: '2026-01-01',
+      name: 'Old job', date: '2026-01-01', status: 'active',
       amountPaise: 10000, committeeSharePaise: 1000, studentSharePaise: 9000,
       studentCount: 2,
-      allocations: [
-        { email: A, index: 0, amountPaise: 5000 },
-        { email: B, index: 1, amountPaise: 4000 },
-      ],
+      allocations: { [A]: 5000, [B]: 4000 },
     });
   });
 }
 
-/* Build the admin job-credit batch (the shape api.addJob produces). */
-function jobCreditBatch(db, jobId, amountPaise, allocs, { omitTxnFor = null, omitCommittee = false, committeeDelta } = {}) {
-  const committee = committeeDelta != null ? committeeDelta : Math.floor(amountPaise / 10);
+/* Build the admin job-credit batch (the exact shape api.addJob produces).
+   allocs: {email: amountPaise}; current: {email: currentPaise}. */
+function jobCreditBatch(db, jobId, amountPaise, allocs, current, {
+  omitTxnFor = null, omitCommittee = false, committeeNewPaise,
+  committeeJobId = null, userFinal = {}, jobData = {},
+} = {}) {
+  const committee = Math.floor(amountPaise / 10);
   const pool = amountPaise - committee;
   const b = writeBatch(db);
-  b.set(doc(db, 'jobs/' + jobId), {
-    name: 'Test job', date: '2026-10-01',
+  b.set(doc(db, 'jobs/' + jobId), Object.assign({
+    name: 'Test job', date: '2026-10-01', status: 'active',
     amountPaise,
     committeeSharePaise: committee,
     studentSharePaise: pool,
-    studentCount: allocs.length,
-    allocations: allocs.map((a, i) => ({ email: a.email, index: i, amountPaise: a.amountPaise })),
-  });
-  allocs.forEach((a, i) => {
-    const cur = a.currentPaise;
-    b.update(doc(db, 'users/' + a.email), { balancePaise: cur + a.amountPaise });
-    if (omitTxnFor !== a.email) {
-      b.set(doc(db, 'users/' + a.email + '/transactions/' + jobId + ':' + i), {
-        type: 'earning', studentId: a.email, jobId,
-        amountPaise: a.amountPaise, amount: a.amountPaise / 100,
+    studentCount: Object.keys(allocs).length,
+    allocations: allocs,
+  }, jobData));
+  Object.entries(allocs).forEach(([email, amount]) => {
+    const final = userFinal[email] != null ? userFinal[email] : current[email] + amount;
+    b.update(doc(db, 'users/' + email), { balancePaise: final, balance: final / 100 });
+    if (omitTxnFor !== email) {
+      b.set(doc(db, 'users/' + email + '/transactions/earn_' + jobId + '_' + email), {
+        type: 'earning', studentId: email, jobId,
+        amountPaise: amount, amount: amount / 100,
         description: 'Earning from Test job',
       });
     }
   });
-  if (!omitCommittee) b.update(doc(db, 'meta/committee'), { balancePaise: 1000 + committee });
+  if (!omitCommittee) {
+    b.update(doc(db, 'meta/committee'), {
+      balancePaise: committeeNewPaise != null ? committeeNewPaise : 1000 + committee,
+      balance: (committeeNewPaise != null ? committeeNewPaise : 1000 + committee) / 100,
+      lastJobId: committeeJobId != null ? committeeJobId : jobId,
+    });
+  }
   return b;
 }
 
-/* Build the admin job-reversal batch (the shape api.deleteJob produces). */
-function jobReversalBatch(db, jobId, allocs, { wrongAmountFor = null, omitCommittee = false, extraTxnIdPrefix } = {}) {
+/* Build the admin job-reversal batch (the exact shape api.deleteJob
+   produces — a TOMBSTONE, never a delete).
+   allocs: {email: originalAmountPaise}; current: {email: currentPaise}. */
+function jobReversalBatch(db, jobId, allocs, current, {
+  wrongUserFinalFor = null, omitCommittee = false, committeeNewPaise = 0,
+  committeeJobId = null, omitJobTombstone = false,
+} = {}) {
   const b = writeBatch(db);
-  allocs.forEach((a, i) => {
-    const amt = wrongAmountFor === a.email ? a.amountPaise - 100 : a.amountPaise;
-    b.update(doc(db, 'users/' + a.email), { balancePaise: a.currentPaise - a.amountPaise });
-    const txnId = (extraTxnIdPrefix || 'rev_') + jobId + '_' + i;
-    b.set(doc(db, 'users/' + a.email + '/transactions/' + txnId), {
-      type: 'reversal', studentId: a.email, jobId,
-      amountPaise: amt, amount: amt / 100,
+  Object.entries(allocs).forEach(([email, amount]) => {
+    let final = current[email] - amount;
+    if (wrongUserFinalFor === email) final = current[email] - amount + 100;
+    b.update(doc(db, 'users/' + email), { balancePaise: final, balance: final / 100 });
+    b.set(doc(db, 'users/' + email + '/transactions/rev_' + jobId + '_' + email), {
+      type: 'reversal', studentId: email, jobId,
+      amountPaise: amount, amount: amount / 100,
       description: 'Reversal — Old job',
     });
   });
-  if (!omitCommittee) b.update(doc(db, 'meta/committee'), { balancePaise: 0 });
-  b.delete(doc(db, 'jobs/' + jobId));
+  if (!omitCommittee) {
+    b.update(doc(db, 'meta/committee'), {
+      balancePaise: committeeNewPaise, balance: committeeNewPaise / 100,
+      reversedJobId: committeeJobId != null ? committeeJobId : jobId,
+    });
+  }
+  if (!omitJobTombstone) {
+    b.update(doc(db, 'jobs/' + jobId), { status: 'reversed', reversedAt: 1 });
+  }
   return b;
 }
 
@@ -145,8 +162,8 @@ function jobReversalBatch(db, jobId, allocs, { wrongAmountFor = null, omitCommit
   console.log('\n' + pass + ' passed, ' + fail + ' failed  (' + tests.length + ' total)');
   process.exit(fail === 0 ? 0 : 1);
 })().catch((e) => {
-  console.error('FATAL — could not initialize the rules test environment.', e.message);
-  console.error('Hint: run via `firebase emulators:exec --only firestore "node test/rules.test.js"`');
+  console.error('FATAL — could not initialize the rules test environment. ' + (e && e.message));
+  console.error('Hint: run via `firebase emulators:exec --project jkss-fund-local --only firestore "node test/rules.test.js"`');
   process.exit(2);
 });
 
@@ -213,6 +230,13 @@ test('student: CANNOT self-create profile for someone else email', async () => {
     email: A, role: 'student', full_name: 'C', balancePaise: 0, balance: 0,
   }));
 });
+test('student: CANNOT self-create profile with extra (unexpected) fields', async () => {
+  const db = authed(C).firestore();
+  await assertFails(setDoc(doc(db, 'users/' + C), {
+    email: C, role: 'student', full_name: 'C', balancePaise: 0, balance: 0,
+    isAdminClaim: true,
+  }));
+});
 test('student: CANNOT modify own role', async () => {
   const db = authed(A).firestore();
   await assertFails(updateDoc(doc(db, 'users/' + A), { role: 'admin' }));
@@ -220,7 +244,7 @@ test('student: CANNOT modify own role', async () => {
 test('student: CANNOT modify own balance without a companion txn', async () => {
   const db = authed(A).firestore();
   await assertFails(updateDoc(doc(db, 'users/' + A), { balancePaise: 999999 }));
-  await assertFails(updateDoc(doc(db, 'users/' + A), { balance: 9999.99, balancePaise: 999999 }));
+  await assertFails(updateDoc(doc(db, 'users/' + A), { balance: 999.99, balancePaise: 999999 }));
 });
 test('student: CANNOT set own balance higher via balance-only float', async () => {
   const db = authed(A).firestore();
@@ -328,14 +352,31 @@ test('student: second withdrawal cannot overdraw after first one (sequential)', 
   });
   await assertFails(b.commit());
 });
-test('student: withdrawal may bundle an allowed profile field (not role/balance extras)', async () => {
+test('student: STALE withdrawal replay (double spend) is denied — delta 0', async () => {
+  const db = authed(A).firestore();
+  const b = writeBatch(db);
+  b.update(doc(db, 'users/' + A), { balancePaise: 3000 });
+  b.set(doc(db, 'users/' + A + '/transactions/w1'), {
+    type: 'withdrawal', studentId: A, amountPaise: 2000, amount: 20,
+  });
+  await assertSucceeds(b.commit());
+  // Client retries the SAME stale batch: the live balance is already 3000,
+  // so the delta is 0 and the rules reject it.
+  b = writeBatch(db);
+  b.update(doc(db, 'users/' + A), { balancePaise: 3000 });
+  b.set(doc(db, 'users/' + A + '/transactions/w1-retry'), {
+    type: 'withdrawal', studentId: A, amountPaise: 2000, amount: 20,
+  });
+  await assertFails(b.commit());
+});
+test('student: withdrawal batch bundling a profile field is denied (balance-only writes)', async () => {
   const db = authed(A).firestore();
   const b = writeBatch(db);
   b.update(doc(db, 'users/' + A), { balancePaise: 4500, full_name: 'A Prime' });
   b.set(doc(db, 'users/' + A + '/transactions/w1'), {
     type: 'withdrawal', studentId: A, amountPaise: 500, amount: 5,
   });
-  await assertSucceeds(b.commit());
+  await assertFails(b.commit());
 });
 test('student: withdrawal batch that also edits role is denied', async () => {
   const db = authed(A).firestore();
@@ -343,6 +384,18 @@ test('student: withdrawal batch that also edits role is denied', async () => {
   b.update(doc(db, 'users/' + A), { balancePaise: 4500, role: 'admin' });
   b.set(doc(db, 'users/' + A + '/transactions/w1'), {
     type: 'withdrawal', studentId: A, amountPaise: 500, amount: 5,
+  });
+  await assertFails(b.commit());
+});
+test('student: withdrawal batch with an EXTRA third write is denied', async () => {
+  const db = authed(A).firestore();
+  const b = writeBatch(db);
+  b.update(doc(db, 'users/' + A), { balancePaise: 4500 });
+  b.set(doc(db, 'users/' + A + '/transactions/w1'), {
+    type: 'withdrawal', studentId: A, amountPaise: 500, amount: 5,
+  });
+  b.set(doc(db, 'users/' + A + '/transactions/w-extra'), {
+    type: 'withdrawal', studentId: A, amountPaise: 1, amount: 0.01,
   });
   await assertFails(b.commit());
 });
@@ -449,22 +502,20 @@ test('admin: CANNOT delete a user doc (tombstone-only)', async () => {
 });
 test('admin: can create a job with a valid complete credit batch', async () => {
   const db = adminCtx().firestore();
-  const b = jobCreditBatch(db, 'j1', 10000, [
-    { email: A, amountPaise: 4500, currentPaise: 5000 },
-    { email: B, amountPaise: 4500, currentPaise: 4000 },
-  ]);
+  const b = jobCreditBatch(db, 'j1', 10000,
+    { [A]: 4500, [B]: 4500 },
+    { [A]: 5000, [B]: 4000 });
   await assertSucceeds(b.commit());
 });
 test('admin: can update a job status (active/archived only)', async () => {
   const db = adminCtx().firestore();
   await assertSucceeds(updateDoc(doc(db, 'jobs/j-old'), { status: 'archived' }));
 });
-test('admin: can delete a job with a valid complete reversal batch (original allocations)', async () => {
+test('admin: can reverse a job with a valid complete reversal batch (original allocations, tombstone)', async () => {
   const db = adminCtx().firestore();
-  const b = jobReversalBatch(db, 'j-old', [
-    { email: A, amountPaise: 5000, currentPaise: 5000 },
-    { email: B, amountPaise: 4000, currentPaise: 4000 },
-  ]);
+  const b = jobReversalBatch(db, 'j-old',
+    { [A]: 5000, [B]: 4000 },
+    { [A]: 5000, [B]: 4000 });
   await assertSucceeds(b.commit());
 });
 
@@ -473,68 +524,125 @@ test('admin: can delete a job with a valid complete reversal batch (original all
    ===================================================================== */
 test('admin: job with wrong committee share (not floor 10%) is denied', async () => {
   const db = adminCtx().firestore();
-  const b = jobCreditBatch(db, 'j1', 10000, [
-    { email: A, amountPaise: 4500, currentPaise: 5000 },
-    { email: B, amountPaise: 4500, currentPaise: 4000 },
-  ], { committeeDelta: 1001 }); // 10.01% — must be exactly floor(10000/10)=1000
+  const b = jobCreditBatch(db, 'j1', 10000,
+    { [A]: 4500, [B]: 4500 },
+    { [A]: 5000, [B]: 4000 },
+    { committeeNewPaise: 1000 + 1001 }); // +1001 ≠ floor(10000/10)=1000
   await assertFails(b.commit());
 });
-test('admin: job whose allocations do not follow the largest-remainder formula is denied', async () => {
+test('admin: job whose allocation values break the base/base+1 formula is denied', async () => {
   const db = adminCtx().firestore();
-  // Pool 9000 over 2 → must be 4500/4500. 4600/4400 keeps the SUM but
-  // breaks the formula (big=0 ≠ r=0... actually base+1 count mismatch).
-  const b = writeBatch(db);
-  b.set(doc(db, 'jobs/j1'), {
-    name: 'Skewed', date: '2026-10-01',
-    amountPaise: 10000, committeeSharePaise: 1000, studentSharePaise: 9000,
-    studentCount: 2,
-    allocations: [
-      { email: A, index: 0, amountPaise: 4600 },
-      { email: B, index: 1, amountPaise: 4400 },
-    ],
-  });
-  b.update(doc(db, 'users/' + A), { balancePaise: 5000 + 4600 });
-  b.update(doc(db, 'users/' + B), { balancePaise: 4000 + 4400 });
-  b.set(doc(db, 'users/' + A + '/transactions/j1:0'), {
-    type: 'earning', studentId: A, jobId: 'j1', amountPaise: 4600, amount: 46,
-  });
-  b.set(doc(db, 'users/' + B + '/transactions/j1:1'), {
-    type: 'earning', studentId: B, jobId: 'j1', amountPaise: 4400, amount: 44,
-  });
-  b.update(doc(db, 'meta/committee'), { balancePaise: 2000 });
+  // Pool 9000 over 2 → base 4500; values must be 4500 or 4501.
+  // 4600/4400 keeps the SUM but violates the formula bounds.
+  const b = jobCreditBatch(db, 'j1', 10000,
+    { [A]: 4600, [B]: 4400 },
+    { [A]: 5000, [B]: 4000 });
   await assertFails(b.commit());
 });
 test('admin: job with credit larger than its allocation is denied', async () => {
   const db = adminCtx().firestore();
   // Job says A gets 4500, but the users update credits 5000.
-  const b = writeBatch(db);
-  b.set(doc(db, 'jobs/j1'), {
-    name: 'Skim', date: '2026-10-01',
-    amountPaise: 10000, committeeSharePaise: 1000, studentSharePaise: 9000,
-    studentCount: 1,
-    allocations: [{ email: A, index: 0, amountPaise: 4500 }],
-  });
-  b.update(doc(db, 'users/' + A), { balancePaise: 5000 + 5000 });
-  b.set(doc(db, 'users/' + A + '/transactions/j1:0'), {
-    type: 'earning', studentId: A, jobId: 'j1', amountPaise: 5000, amount: 50,
-  });
-  b.update(doc(db, 'meta/committee'), { balancePaise: 2000 });
+  const b = jobCreditBatch(db, 'j1', 10000,
+    { [A]: 4500 },
+    { [A]: 5000 },
+    { userFinal: { [A]: 5000 + 5000 } });
   await assertFails(b.commit());
 });
 test('admin: incomplete job batch (missing a student txn) is denied atomically', async () => {
   const db = adminCtx().firestore();
-  const b = jobCreditBatch(db, 'j1', 10000, [
-    { email: A, amountPaise: 4500, currentPaise: 5000 },
-    { email: B, amountPaise: 4500, currentPaise: 4000 },
-  ], { omitTxnFor: B });
+  const b = jobCreditBatch(db, 'j1', 10000,
+    { [A]: 4500, [B]: 4500 },
+    { [A]: 5000, [B]: 4000 },
+    { omitTxnFor: B });
   await assertFails(b.commit());
 });
 test('admin: job batch without the committee credit is denied', async () => {
   const db = adminCtx().firestore();
-  const b = jobCreditBatch(db, 'j1', 10000, [
-    { email: A, amountPaise: 4500, currentPaise: 5000 },
-    { email: B, amountPaise: 4500, currentPaise: 4000 },
-  ], { omitCommittee: true });
+  const b = jobCreditBatch(db, 'j1', 10000,
+    { [A]: 4500, [B]: 4500 },
+    { [A]: 5000, [B]: 4000 },
+    { omitCommittee: true });
+  await assertFails(b.commit());
+});
+test('admin: job batch whose committee references a DIFFERENT job id is denied', async () => {
+  const db = adminCtx().firestore();
+  const b = jobCreditBatch(db, 'j1', 10000,
+    { [A]: 4500, [B]: 4500 },
+    { [A]: 5000, [B]: 4000 },
+    { committeeJobId: 'j-other' });
+  await assertFails(b.commit());
+});
+test('admin: job batch whose committee references a job NOT in the batch is denied', async () => {
+  const db = adminCtx().firestore();
+  const b = writeBatch(db);
+  b.set(doc(db, 'jobs/j1'), {
+    name: 'Test job', date: '2026-10-01', status: 'active',
+    amountPaise: 10000, committeeSharePaise: 1000, studentSharePaise: 9000,
+    studentCount: 2, allocations: { [A]: 4500, [B]: 4500 },
+  });
+  b.update(doc(db, 'users/' + A), { balancePaise: 9500, balance: 95 });
+  b.set(doc(db, 'users/' + A + '/transactions/earn_j1_' + A), {
+    type: 'earning', studentId: A, jobId: 'j1', amountPaise: 4500, amount: 45,
+  });
+  b.update(doc(db, 'users/' + B), { balancePaise: 8500, balance: 85 });
+  b.set(doc(db, 'users/' + B + '/transactions/earn_j1_' + B), {
+    type: 'earning', studentId: B, jobId: 'j1', amountPaise: 4500, amount: 45,
+  });
+  // Committee points at j-old (which is NOT written in this batch).
+  b.update(doc(db, 'meta/committee'), {
+    balancePaise: 2000, balance: 20, lastJobId: 'j-old',
+  });
+  await assertFails(b.commit());
+});
+test('admin: earning txn with a NON-CANONICAL id is denied', async () => {
+  const db = adminCtx().firestore();
+  const b = writeBatch(db);
+  b.set(doc(db, 'jobs/j1'), {
+    name: 'Test job', date: '2026-10-01', status: 'active',
+    amountPaise: 10000, committeeSharePaise: 1000, studentSharePaise: 9000,
+    studentCount: 1, allocations: { [A]: 9000 },
+  });
+  b.update(doc(db, 'users/' + A), { balancePaise: 5000 + 9000 });
+  // Wrong txn id format (not earn_{jobId}_{email}).
+  b.set(doc(db, 'users/' + A + '/transactions/j1:0'), {
+    type: 'earning', studentId: A, jobId: 'j1', amountPaise: 9000, amount: 90,
+  });
+  b.update(doc(db, 'meta/committee'), {
+    balancePaise: 2000, balance: 20, lastJobId: 'j1',
+  });
+  await assertFails(b.commit());
+});
+test('admin: committee update in a credit batch WITHOUT lastJobId is denied', async () => {
+  const db = adminCtx().firestore();
+  const b = writeBatch(db);
+  b.set(doc(db, 'jobs/j1'), {
+    name: 'Test job', date: '2026-10-01', status: 'active',
+    amountPaise: 10000, committeeSharePaise: 1000, studentSharePaise: 9000,
+    studentCount: 1, allocations: { [A]: 9000 },
+  });
+  b.update(doc(db, 'users/' + A), { balancePaise: 5000 + 9000 });
+  b.set(doc(db, 'users/' + A + '/transactions/earn_j1_' + A), {
+    type: 'earning', studentId: A, jobId: 'j1', amountPaise: 9000, amount: 90,
+  });
+  b.update(doc(db, 'meta/committee'), { balancePaise: 2000, balance: 20 });
+  await assertFails(b.commit());
+});
+test('admin: job with legacy LIST allocations (old format) is denied', async () => {
+  const db = adminCtx().firestore();
+  const b = writeBatch(db);
+  b.set(doc(db, 'jobs/j1'), {
+    name: 'Old format', date: '2026-10-01',
+    amountPaise: 10000, committeeSharePaise: 1000, studentSharePaise: 9000,
+    studentCount: 1,
+    allocations: [{ email: A, index: 0, amountPaise: 9000 }],
+  });
+  b.update(doc(db, 'users/' + A), { balancePaise: 5000 + 9000 });
+  b.set(doc(db, 'users/' + A + '/transactions/earn_j1_' + A), {
+    type: 'earning', studentId: A, jobId: 'j1', amountPaise: 9000, amount: 90,
+  });
+  b.update(doc(db, 'meta/committee'), {
+    balancePaise: 2000, balance: 20, lastJobId: 'j1',
+  });
   await assertFails(b.commit());
 });
 test('admin: CANNOT update job fields other than status', async () => {
@@ -543,51 +651,97 @@ test('admin: CANNOT update job fields other than status', async () => {
   await assertFails(updateDoc(doc(db, 'jobs/j-old'), { amountPaise: 1 }));
   await assertFails(updateDoc(doc(db, 'jobs/j-old'), { status: 'pending' }));
 });
-test('admin: CANNOT delete a job without a full reversal batch', async () => {
+test('admin: CANNOT delete a job at all (tombstone-only, even with a full reversal batch)', async () => {
   const db = adminCtx().firestore();
+  // Even a perfect reversal + delete in one batch is denied: deletion
+  // would destroy the allocation history the ledger depends on.
+  const b = jobReversalBatch(db, 'j-old',
+    { [A]: 5000, [B]: 4000 },
+    { [A]: 5000, [B]: 4000 });
+  b.delete(doc(db, 'jobs/j-old'));
+  await assertFails(b.commit());
   await assertFails(deleteDoc(doc(db, 'jobs/j-old')));
 });
-test('admin: reversal with wrong (recalculated) amounts is denied', async () => {
+test('admin: reversal with wrong (recalculated) debit amount is denied', async () => {
   const db = adminCtx().firestore();
-  const b = jobReversalBatch(db, 'j-old', [
-    { email: A, amountPaise: 5000, currentPaise: 5000 },
-    { email: B, amountPaise: 4000, currentPaise: 4000 },
-  ], { wrongAmountFor: A }); // txn says 4900 ≠ original 5000
+  const b = jobReversalBatch(db, 'j-old',
+    { [A]: 5000, [B]: 4000 },
+    { [A]: 5000, [B]: 4000 },
+    { wrongUserFinalFor: A }); // user debit 4900 ≠ original allocation 5000
   await assertFails(b.commit());
 });
 test('admin: reversal using CURRENT-roster amounts (not original allocations) is denied', async () => {
   const db = adminCtx().firestore();
-  // Roster changed: B is gone, pool "recalculated" evenly to A alone.
+  // Roster "changed": someone tries to debit A 9000 (the whole pool)
+  // instead of the original 5000.
   const b = writeBatch(db);
-  b.update(doc(db, 'users/' + A), { balancePaise: 5000 - 9000 }); // -4000 → negative, active
-  b.set(doc(db, 'users/' + A + '/transactions/rev_j-old_0'), {
+  b.update(doc(db, 'users/' + A), { balancePaise: 5000 - 9000 }); // → -4000, active
+  b.set(doc(db, 'users/' + A + '/transactions/rev_j-old_' + A), {
     type: 'reversal', studentId: A, jobId: 'j-old', amountPaise: 9000, amount: 90,
   });
-  b.update(doc(db, 'meta/committee'), { balancePaise: 0 });
-  b.delete(doc(db, 'jobs/j-old'));
+  b.update(doc(db, 'meta/committee'), { balancePaise: 0, balance: 0, reversedJobId: 'j-old' });
+  b.update(doc(db, 'jobs/j-old'), { status: 'reversed', reversedAt: 1 });
   await assertFails(b.commit());
 });
 test('admin: reversal without committee credit-back is denied', async () => {
   const db = adminCtx().firestore();
-  const b = jobReversalBatch(db, 'j-old', [
-    { email: A, amountPaise: 5000, currentPaise: 5000 },
-    { email: B, amountPaise: 4000, currentPaise: 4000 },
-  ], { omitCommittee: true });
+  const b = jobReversalBatch(db, 'j-old',
+    { [A]: 5000, [B]: 4000 },
+    { [A]: 5000, [B]: 4000 },
+    { omitCommittee: true });
   await assertFails(b.commit());
 });
-test('admin: legacy job (no allocation history) CANNOT be deleted — manual reconciliation required', async () => {
+test('admin: reversal without the job tombstone write is denied', async () => {
+  const db = adminCtx().firestore();
+  const b = jobReversalBatch(db, 'j-old',
+    { [A]: 5000, [B]: 4000 },
+    { [A]: 5000, [B]: 4000 },
+    { omitJobTombstone: true });
+  await assertFails(b.commit());
+});
+test('admin: second reversal of the same (already tombstoned) job is denied', async () => {
+  const db = adminCtx().firestore();
+  const b1 = jobReversalBatch(db, 'j-old',
+    { [A]: 5000, [B]: 4000 },
+    { [A]: 5000, [B]: 4000 });
+  await assertSucceeds(b1.commit());
+  // Retry / double reversal: the users writes would debit again.
+  const b2 = writeBatch(db);
+  b2.update(doc(db, 'users/' + A), { balancePaise: 0 - 5000 });
+  b2.set(doc(db, 'users/' + A + '/transactions/rev_j-old_' + A + '_retry'), {
+    type: 'reversal', studentId: A, jobId: 'j-old', amountPaise: 5000, amount: 50,
+  });
+  b2.update(doc(db, 'meta/committee'), {
+    balancePaise: 0 - 1000, balance: -10, reversedJobId: 'j-old',
+  });
+  await assertFails(b2.commit());
+});
+test('admin: legacy job (no allocation history) CANNOT be reversed — manual reconciliation required', async () => {
   await env.withSecurityRulesDisabled(async (ctx) => {
     const d = ctx.firestore();
     await setDoc(doc(d, 'jobs/j-legacy'), {
-      name: 'Legacy', date: '2025-01-01', amount: 500, committeeShare: 50, studentShare: 450,
+      name: 'Legacy', date: '2025-01-01', status: 'active',
+      amount: 500, committeeShare: 50, studentShare: 450,
     });
   });
   const db = adminCtx().firestore();
+  const b = writeBatch(db);
+  b.update(doc(db, 'jobs/j-legacy'), { status: 'reversed', reversedAt: 1 });
+  b.update(doc(db, 'meta/committee'), {
+    balancePaise: 1000 - 5000, balance: -40, reversedJobId: 'j-legacy',
+  });
+  await assertFails(b.commit());
   await assertFails(deleteDoc(doc(db, 'jobs/j-legacy')));
 });
 test('admin: CANNOT update committee outside a job batch', async () => {
   const db = adminCtx().firestore();
   await assertFails(updateDoc(doc(db, 'meta/committee'), { balancePaise: 2000 }));
+});
+test('admin: CANNOT update committee with a dangling lastJobId (job not in batch)', async () => {
+  const db = adminCtx().firestore();
+  await assertFails(updateDoc(doc(db, 'meta/committee'), {
+    balancePaise: 2000, lastJobId: 'j-ghost',
+  }));
 });
 test('admin: CAN read legacy /transactions (audit) but CANNOT write them', async () => {
   const db = adminCtx().firestore();
@@ -614,16 +768,8 @@ test('removed student: reversal debits the ORIGINAL amount and may drive them ne
   });
   await assertSucceeds(b.commit());
 
-  b = writeBatch(db);
-  b.update(doc(db, 'users/' + A), { balancePaise: 0 });            // 5000 - 5000
-  b.set(doc(db, 'users/' + A + '/transactions/rev_j-old_0'), {
-    type: 'reversal', studentId: A, jobId: 'j-old', amountPaise: 5000, amount: 50,
-  });
-  b.update(doc(db, 'users/' + B), { balancePaise: -1000 });        // 3000 - 4000 (allowed: removed)
-  b.set(doc(db, 'users/' + B + '/transactions/rev_j-old_1'), {
-    type: 'reversal', studentId: B, jobId: 'j-old', amountPaise: 4000, amount: 40,
-  });
-  b.update(doc(db, 'meta/committee'), { balancePaise: 0 });
-  b.delete(doc(db, 'jobs/j-old'));
+  b = jobReversalBatch(db, 'j-old',
+    { [A]: 5000, [B]: 4000 },
+    { [A]: 5000, [B]: 3000 });
   await assertSucceeds(b.commit());
 });

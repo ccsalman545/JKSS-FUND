@@ -46,7 +46,6 @@ const txnsOf = (email) => userDoc(email).collection('transactions');
 
 const norm = (e) => (e || '').toLowerCase().trim();
 const now = () => firestore.FieldValue.serverTimestamp();
-const inc = (n) => firestore.FieldValue.increment(n);
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
@@ -197,9 +196,12 @@ export const api = {
       if (!students.length) throw new Error('Add students before creating a job');
 
       // Largest-remainder allocation — sums EXACTLY to studentSharePaise.
+      // On disk this is a MAP {email: paise}; the rules address each entry
+      // with allocations.get(email).
       const n = students.length;
       const allocations = allocateLargestRemainder(studentSharePaise, students);
       assertAllocationsExact(allocations, studentSharePaise);
+      const amountValues = Object.values(allocations);
 
       const jobData = {
         name,
@@ -209,38 +211,59 @@ export const api = {
         studentSharePaise,
         studentCount: n,
         allocations,
+        status: 'active',
         // Legacy rupee mirrors (display only — never used for math).
         amount: paiseToRupees(amountPaise),
         committeeShare: paiseToRupees(committeeSharePaise),
         studentShare: paiseToRupees(studentSharePaise),
-        perStudent: paiseToRupees(allocations[0].amountPaise),
+        perStudent: paiseToRupees(Math.min(...amountValues)),
         createdBy: auth().currentUser?.email || '',
         createdAt: now(),
       };
+
+      // Read every credited student's LIVE balance first: the rules
+      // validate the delta against the live document, so we must write
+      // explicit final values (never server increments). If any balance
+      // moved since we read, the rules reject the batch and we retry.
+      const userSnaps = await Promise.all(
+        students.map((s) => t.get(userDoc(s.id)))
+      );
+      const balances = {};
+      students.forEach((s, i) => {
+        if (!userSnaps[i].exists) throw new Error(`Profile missing: ${s.id}`);
+        balances[s.id] = paiseOf(userSnaps[i].data());
+      });
+      const committeeSnap = await t.get(committeeDoc());
+      if (!committeeSnap.exists) throw new Error('Committee not initialized');
+      const committeeBalance = paiseOf(committeeSnap.data());
+
       t.set(jobRef, jobData);
 
       // Zero-paise allocations are recorded on the job doc (history) but
-      // generate no balance write — matching the rules' non-zero count.
-      allocations
-        .filter((a) => a.amountPaise > 0)
-        .forEach((a) => {
-          t.update(userDoc(a.email), {
-            balancePaise: inc(a.amountPaise),
-            balance: inc(paiseToRupees(a.amountPaise)),
-          });
-          t.set(txnsOf(a.email).doc(`${jobId}:${a.index}`), {
-            type: 'earning',
-            studentId: a.email,
-            jobId,
-            amountPaise: a.amountPaise,
-            amount: paiseToRupees(a.amountPaise),
-            description: `Earning from ${name}`,
-            createdAt: now(),
-          });
+      // generate no balance write.
+      Object.entries(allocations).forEach(([email, amountPaiseAlloc]) => {
+        if (amountPaiseAlloc <= 0) return;
+        t.update(userDoc(email), {
+          balancePaise: balances[email] + amountPaiseAlloc,
+          balance: paiseToRupees(balances[email] + amountPaiseAlloc),
         });
+        // Canonical id (required by the rules): earn_{jobId}_{email}.
+        t.set(txnsOf(email).doc(`earn_${jobId}_${email}`), {
+          type: 'earning',
+          studentId: email,
+          jobId,
+          amountPaise: amountPaiseAlloc,
+          amount: paiseToRupees(amountPaiseAlloc),
+          description: `Earning from ${name}`,
+          createdAt: now(),
+        });
+      });
+      // The committee update references the job: this is how the rules
+      // (which cannot iterate unknown paths) tie the whole batch together.
       t.update(committeeDoc(), {
-        balancePaise: inc(committeeSharePaise),
-        balance: inc(paiseToRupees(committeeSharePaise)),
+        balancePaise: committeeBalance + committeeSharePaise,
+        balance: paiseToRupees(committeeBalance + committeeSharePaise),
+        lastJobId: jobId,
       });
     });
 
@@ -250,23 +273,30 @@ export const api = {
     };
   },
 
-  // Delete a job = replay its ORIGINAL allocations as 'reversal' entries.
-  // The current roster is irrelevant; the stored allocation list is the
-  // source of truth. Legacy jobs without allocation history are refused.
+  // Reverse a job = replay its ORIGINAL allocations as 'reversal' entries.
+  // The current roster is irrelevant; the stored allocation map is the
+  // source of truth. The job is TOMBSTONED (status 'reversed'), never
+  // deleted, so the original allocation history stays auditable and a
+  // retry can never double-reverse (the rules reject a second reversal of
+  // the same job). Legacy jobs without allocation history are refused.
   async deleteJob(id) {
     const jobRef = jobsCol().doc(id);
     const pre = await jobRef.get();
     if (!pre.exists) throw new Error('Job not found');
+    const d0 = pre.data();
+
+    if (d0.status === 'reversed') throw new Error('This job was already reversed');
 
     const legacy =
-      !Array.isArray(pre.data().allocations) ||
-      pre.data().allocations.length === 0 ||
-      pre.data().committeeSharePaise == null ||
-      !Number.isInteger(pre.data().amountPaise);
+      d0.allocations == null ||
+      typeof d0.allocations !== 'object' ||
+      Object.keys(d0.allocations).length === 0 ||
+      d0.committeeSharePaise == null ||
+      !Number.isInteger(d0.amountPaise);
     if (legacy) {
       throw new Error(
         'This job predates the audit trail (no allocation history). ' +
-        'Reconcile it manually in Firestore before deleting — automatic ' +
+        'Reconcile it manually in Firestore before reversing — automatic ' +
         'reversal is disabled to protect the ledger.'
       );
     }
@@ -274,37 +304,61 @@ export const api = {
     await db.runTransaction(async (t) => {
       const fresh = await t.get(jobRef);
       if (!fresh.exists) throw new Error('Job not found');
+      if (fresh.data().status === 'reversed') {
+        throw new Error('This job was already reversed');
+      }
       const d = fresh.data();
-      const allocations = d.allocations;
+      const allocations = d.allocations; // map {email: paise}
 
-      allocations.forEach((a) => {
-        t.update(userDoc(a.email), {
-          balancePaise: inc(-a.amountPaise),
-          balance: inc(-paiseToRupees(a.amountPaise)),
+      // Read every debited student's LIVE balance first (rules validate
+      // explicit final values against the live document). Removed students
+      // may go negative (the fund's standing liability); the rules enforce
+      // the same.
+      const emails = Object.keys(allocations);
+      const userSnaps = await Promise.all(emails.map((e) => t.get(userDoc(e))));
+      const balances = {};
+      emails.forEach((e, i) => {
+        if (!userSnaps[i].exists) throw new Error(`Profile missing: ${e}`);
+        balances[e] = paiseOf(userSnaps[i].data());
+      });
+      const committeeSnap = await t.get(committeeDoc());
+      if (!committeeSnap.exists) throw new Error('Committee not initialized');
+      const committeeBalance = paiseOf(committeeSnap.data());
+
+      emails.forEach((email) => {
+        const amountPaiseAlloc = allocations[email];
+        t.update(userDoc(email), {
+          balancePaise: balances[email] - amountPaiseAlloc,
+          balance: paiseToRupees(balances[email] - amountPaiseAlloc),
         });
-        // Deterministic id: a retry can never double-reverse.
-        t.set(txnsOf(a.email).doc(`rev_${id}_${a.index}`), {
+        // Deterministic id (required by the rules): rev_{jobId}_{email}.
+        t.set(txnsOf(email).doc(`rev_${id}_${email}`), {
           type: 'reversal',
-          studentId: a.email,
+          studentId: email,
           jobId: id,
-          amountPaise: a.amountPaise,
-          amount: paiseToRupees(a.amountPaise),
+          amountPaise: amountPaiseAlloc,
+          amount: paiseToRupees(amountPaiseAlloc),
           description: `Reversal — ${d.name}`,
           createdAt: now(),
         });
       });
       t.update(committeeDoc(), {
-        balancePaise: inc(-d.committeeSharePaise),
-        balance: inc(-paiseToRupees(d.committeeSharePaise)),
+        balancePaise: committeeBalance - d.committeeSharePaise,
+        balance: paiseToRupees(committeeBalance - d.committeeSharePaise),
+        reversedJobId: id,
       });
-      t.delete(jobRef);
+      // Tombstone — keep the original allocation history for audit.
+      t.update(jobRef, { status: 'reversed', reversedAt: now() });
     });
   },
 
   // ---------- Reports ----------
   async reports(period = 'monthly') {
     const s = await jobsCol().get();
-    const jobs = s.docs.map((d) => ({ id: d.id, ...d.data() }));
+    // Reversed jobs are excluded: their distributions were undone, and the
+    // committee credit-back is a reclassification, not income.
+    const jobs = s.docs.map((d) => ({ id: d.id, ...d.data() }))
+      .filter((j) => j.status !== 'reversed');
     const series = {};
     jobs.forEach((j) => {
       const d = new Date(j.date || Date.now());
@@ -423,9 +477,12 @@ export const api = {
       if (amountPaise > balancePaise) throw new Error('Insufficient balance');
 
       const newPaise = balancePaise - amountPaise;
+      // Explicit FINAL value (never a server increment): the rules compute
+      // the delta against the live document, which makes a stale/duplicate
+      // batch impossible (it would show delta 0 and be rejected).
       t.update(uRef, {
-        balancePaise: inc(-amountPaise),
-        balance: inc(-paiseToRupees(amountPaise)),
+        balancePaise: newPaise,
+        balance: paiseToRupees(newPaise),
       });
       t.set(txnRef, {
         type: 'withdrawal',
@@ -452,19 +509,21 @@ export const api = {
 function shapeDashboard(students, jobs, committeePaise) {
   const active = students.filter((s) => !s.removedAt);
   const totalDistributed = students.reduce((s, x) => s + paiseOf(x), 0) / 100;
-  const totalJobsAmount = jobs.reduce(
+  // Reversed (tombstoned) jobs are history — excluded from totals.
+  const live = jobs.filter((j) => j.status !== 'reversed');
+  const totalJobsAmount = live.reduce(
     (s, j) => s + (Number.isInteger(j.amountPaise) ? j.amountPaise : Math.round(Number(j.amount || 0) * 100)),
     0
   ) / 100;
   return {
     students: active,
-    jobs,
+    jobs: jobs.map((j) => ({ ...j, reversed: j.status === 'reversed' })),
     committeeBalance: paiseToRupees(committeePaise),
     stats: {
       totalStudents: active.length,
       totalDistributed,
       totalJobsAmount,
-      totalJobs: jobs.length,
+      totalJobs: live.length,
     },
   };
 }

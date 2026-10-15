@@ -7,7 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { Button, Input, FadeIn } from '../components/ui';
-import { APP_NAME } from '../config';
+import { APP_NAME, GOOGLE_SIGNIN_CONFIGURED } from '../config';
 
 export default function LoginScreen() {
   const { login, googleLogin } = useAuth();
@@ -63,24 +63,34 @@ export default function LoginScreen() {
           <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.mode === 'light' ? 'transparent' : theme.border }]}>
             <Text style={[styles.cardTitle, { color: theme.text }]}>Sign in</Text>
             <Text style={[styles.cardSub, { color: theme.textMuted }]}>
-              Students use Google · Admins use their credentials
+              {GOOGLE_SIGNIN_CONFIGURED
+                ? 'Students use Google · Admins use their credentials'
+                : 'Sign in with your email and password'}
             </Text>
 
-            <Button
-              label={gLoading ? 'Signing in…' : 'Continue with Google'}
-              variant="outline"
-              icon="logo-google"
-              loading={gLoading}
-              onPress={onGoogle}
-              size="lg"
-              style={styles.googleBtn}
-            />
+            {GOOGLE_SIGNIN_CONFIGURED ? (
+              <Button
+                label={gLoading ? 'Signing in…' : 'Continue with Google'}
+                variant="outline"
+                icon="logo-google"
+                loading={gLoading}
+                onPress={onGoogle}
+                size="lg"
+                style={styles.googleBtn}
+              />
+            ) : (
+              <Text style={[styles.googleNote, { color: theme.textFaint }]}>
+                Google sign-in is not configured yet — email sign-in works for all roles.
+              </Text>
+            )}
 
-            <View style={[styles.dividerRow, { borderColor: theme.border }]}>
-              <View style={{ flex: 1 }} />
-              <Text style={[styles.dividerText, { color: theme.textFaint }]}>OR</Text>
-              <View style={{ flex: 1 }} />
-            </View>
+            {GOOGLE_SIGNIN_CONFIGURED && (
+              <View style={[styles.dividerRow, { borderColor: theme.border }]}>
+                <View style={{ flex: 1 }} />
+                <Text style={[styles.dividerText, { color: theme.textFaint }]}>OR</Text>
+                <View style={{ flex: 1 }} />
+              </View>
+            )}
 
             <Input
               icon="mail-outline"

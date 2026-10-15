@@ -62,7 +62,10 @@ function splitShares(amountPaise, committeePct = 10) {
  * Largest-remainder allocation of a paise pool over an ordered student list.
  * @param {number} poolPaise - integer paise to distribute (>= 0)
  * @param {Array<{id:string}>} students - already sorted by doc id
- * @returns {Array<{email:string, index:number, amountPaise:number}>}
+ * @returns {Object<string,number>} MAP {email: amountPaise} — the on-disk
+ *   format the Firestore rules address via `allocations.get(email)`;
+ *   the first r = pool - base*n students receive base+1, the rest base.
+ *   The values always sum EXACTLY to pool.
  */
 function allocateLargestRemainder(poolPaise, students) {
   const pool = Number(poolPaise);
@@ -71,32 +74,34 @@ function allocateLargestRemainder(poolPaise, students) {
   }
   const list = students || [];
   const n = list.length;
-  if (n === 0) return [];
+  if (n === 0) return {};
   const base = Math.floor(pool / n);
   const remainder = pool - base * n; // 0 <= remainder < n
-  return list.map((s, i) => ({
-    email: s.id,
-    index: i,
-    amountPaise: base + (i < remainder ? 1 : 0),
-  }));
+  const out = {};
+  list.forEach((s, i) => {
+    out[s.id] = base + (i < remainder ? 1 : 0);
+  });
+  return out;
 }
 
 /**
- * Invariant guard: allocations must sum EXACTLY to the pool and carry a
- * contiguous 0..n-1 index order. Throws on violation (defensive — the
+ * Invariant guard: allocation values must sum EXACTLY to the pool and all
+ * keys/values must be well-formed. Throws on violation (defensive — the
  * allocation above cannot violate this, but any future caller can).
+ * @param {Object<string,number>} allocations - map {email: paise}
  */
 function assertAllocationsExact(allocations, poolPaise) {
   const pool = Math.trunc(Number(poolPaise));
-  const total = (allocations || []).reduce((s, a) => s + Number(a.amountPaise), 0);
+  const entries = Object.entries(allocations || {});
+  const total = entries.reduce((s, [, p]) => s + Number(p), 0);
   if (total !== pool) {
     throw new Error(
       `Allocation integrity violation: allocated ${total} paise but pool is ${pool} paise`
     );
   }
-  (allocations || []).forEach((a, i) => {
-    if (a.index !== i || !Number.isInteger(a.amountPaise) || a.amountPaise < 0) {
-      throw new Error(`Allocation integrity violation at index ${i}`);
+  entries.forEach(([email, p]) => {
+    if (!email || !Number.isInteger(p) || p < 0) {
+      throw new Error(`Allocation integrity violation for "${email}"`);
     }
   });
 }

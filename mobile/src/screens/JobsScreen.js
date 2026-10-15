@@ -77,8 +77,10 @@ export default function JobsScreen({ navigation }) {
     ? (amtPaise - Math.floor((amtPaise * COMMITTEE_SHARE_PCT) / 100)) % studentCount
     : 0;
 
-  const totalCollected = jobs.reduce((s, j) => s + Number(j.amount || 0), 0);
-  const monthCollected = jobs
+  // Reversed (tombstoned) jobs are history — excluded from the totals.
+  const liveJobs = jobs.filter((j) => !j.reversed);
+  const totalCollected = liveJobs.reduce((s, j) => s + Number(j.amount || 0), 0);
+  const monthCollected = liveJobs
     .filter((j) => sameMonth(j.date || j.createdAt))
     .reduce((s, j) => s + Number(j.amount || 0), 0);
 
@@ -129,18 +131,23 @@ export default function JobsScreen({ navigation }) {
                     <Ionicons name="briefcase-outline" size={16} color={theme.primary} />
                   </View>
                   <View style={{ flex: 1, marginHorizontal: 12 }}>
-                    <Text style={[styles.jobName, { color: theme.text }]} numberOfLines={1}>{j.name}</Text>
+                    <Text style={[styles.jobName, { color: j.reversed ? theme.textFaint : theme.text }]} numberOfLines={1}>
+                      {j.name}
+                      {j.reversed ? <Text style={{ color: theme.textFaint }}> · reversed</Text> : null}
+                    </Text>
                     <Text style={[styles.jobDate, { color: theme.textFaint }]}>{formatDate(j.date)}</Text>
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={[styles.jobAmt, { color: theme.text }]}>{formatINR(j.amount)}</Text>
-                    <IconButton
-                      icon="trash-outline"
-                      tint={theme.danger}
-                      size={30}
-                      style={{ marginTop: 4 }}
-                      onPress={() => setToDelete(j)}
-                    />
+                    <Text style={[styles.jobAmt, { color: j.reversed ? theme.textFaint : theme.text }]}>{formatINR(j.amount)}</Text>
+                    {!j.reversed && (
+                      <IconButton
+                        icon="trash-outline"
+                        tint={theme.danger}
+                        size={30}
+                        style={{ marginTop: 4 }}
+                        onPress={() => setToDelete(j)}
+                      />
+                    )}
                   </View>
                 </View>
 
@@ -235,7 +242,7 @@ export default function JobsScreen({ navigation }) {
         onClose={() => setToDelete(null)}
         onConfirm={confirmDelete}
         title="Delete job?"
-        message={`"${toDelete?.name || ''}" will be removed and every student's share (${toDelete ? formatINR(toDelete.perStudent || 0) : ''} each) will be reversed.`}
+        message={`"${toDelete?.name || ''}" will be reversed: every student's original share (${toDelete ? formatINR(toDelete.perStudent || 0) : ''} each) is debited back and the committee share is returned. The job is kept as a 'reversed' record for audit.`}
         confirmLabel="Delete job"
       />
     </Screen>

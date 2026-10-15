@@ -1,16 +1,20 @@
-# JKSS-FUND (AiCoN FundMe) v3.1 — Firebase Edition
+# JKSS-FUND (AiCoN FundMe) v3.2 — Firebase Edition
 
 A **feature-rich, deployable Android app** for transparent hostel fund management, built
-with **React Native (Expo) + Firebase**. Students sign in with **Google**, the admin adds
-jobs, and the app automatically splits each payment **10% → committee fund / 90% → split
-among students (paise-exact)**. All amounts are in **Indian Rupees (₹)**.
+with **React Native (Expo) + Firebase**. Students sign in with **Google** (once OAuth is
+configured) or email/password, the admin adds jobs, and the app automatically splits each
+payment **10% → committee fund / 90% → split among students (paise-exact)**. All amounts
+are in **Indian Rupees (₹)**.
 
-> **v3.1 — Security & accounting hardening.** Least-privilege Firestore rules,
-> integer-paise accounting (no float drift), atomic job/withdrawal/reversal
-> transactions, original-allocation job reversals, and an automated test suite.
-> See **[`SECURITY_REVIEW.md`](./SECURITY_REVIEW.md)** for the vulnerability
-> findings, the schema changes, the exact test/deploy commands, and an honest
-> "safe for testing vs ready for real funds" assessment.
+> **v3.2 — Security & accounting hardening (final).** Least-privilege Firestore rules
+> written strictly within the verified rules language (no `filter`/lambda — see the
+> language notes), integer-paise accounting (no float drift), atomic job/withdrawal/
+> reversal transactions with explicit final balances, original-allocation job
+> **tombstone** reversals, and an automated test suite that runs the production rules
+> engine in CI on every push. See **[`SECURITY_REVIEW.md`](./SECURITY_REVIEW.md)** for
+> the vulnerability findings, the schema changes, the exact test/deploy commands, the
+> `app.json`/`.firebaserc`/OAuth configuration verification, and an honest "safe for
+> testing vs ready for real funds" assessment.
 
 The custom Express/SQLite backend has been **replaced by Firebase** (Authentication +
 Cloud Firestore + Security Rules), so there is **no server to run or host**.

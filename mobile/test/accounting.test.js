@@ -110,32 +110,37 @@ const ids = (n) => Array.from({ length: n }, (_, i) => ({ id: 's' + String(i).pa
 
 check('allocate: pool 10 over 4 → [3,3,2,2]', () => {
   const a = allocateLargestRemainder(10, ids(4));
-  eq(a.map((x) => x.amountPaise).join(','), '3,3,2,2');
+  eq(Object.values(a).join(','), '3,3,2,2');
 });
 check('allocate: pool 5 over 3 → [2,2,1]', () => {
   const a = allocateLargestRemainder(5, ids(3));
-  eq(a.map((x) => x.amountPaise).join(','), '2,2,1');
+  eq(Object.values(a).join(','), '2,2,1');
 });
 check('allocate: exact division', () => {
   const a = allocateLargestRemainder(90000, ids(3));
-  eq(a.map((x) => x.amountPaise).join(','), '30000,30000,30000');
+  eq(Object.values(a).join(','), '30000,30000,30000');
 });
 check('allocate: pool smaller than n (zero-paise allowed)', () => {
   const a = allocateLargestRemainder(1, ids(5));
-  eq(a.map((x) => x.amountPaise).join(','), '1,0,0,0,0');
-  eq(a.reduce((s, x) => s + x.amountPaise, 0), 1);
+  eq(Object.values(a).join(','), '1,0,0,0,0');
+  eq(Object.values(a).reduce((s, x) => s + x, 0), 1);
 });
 check('allocate: pool 0', () => {
   const a = allocateLargestRemainder(0, ids(3));
-  eq(a.map((x) => x.amountPaise).join(','), '0,0,0');
+  eq(Object.values(a).join(','), '0,0,0');
 });
-check('allocate: empty roster', () => eq(allocateLargestRemainder(100, []).length, 0));
-check('allocate: indices contiguous 0..n-1, emails in order', () => {
+check('allocate: empty roster', () => eq(Object.keys(allocateLargestRemainder(100, [])).length, 0));
+check('allocate: keys are the student emails in roster order', () => {
   const st = ids(6);
   const a = allocateLargestRemainder(7, st);
-  a.forEach((x, i) => {
-    eq(x.index, i);
-    eq(x.email, st[i].id);
+  Object.keys(a).forEach((email, i) => {
+    eq(email, st[i].id);
+  });
+});
+check('allocate: map {email: paise} shape (integer values)', () => {
+  const a = allocateLargestRemainder(7, ids(3));
+  Object.entries(a).forEach(([email, p]) => {
+    if (typeof email !== 'string' || !Number.isInteger(p) || p < 0) throw new Error('bad entry');
   });
 });
 check('allocate: deterministic for same input', () => {
@@ -148,10 +153,10 @@ check('allocate: invariants over 100k random (pool, roster)', () => {
     const n = 1 + Math.floor(Math.random() * 24); // MAX_STUDENTS = 24
     const pool = Math.floor(Math.random() * 10000000);
     const a = allocateLargestRemainder(pool, ids(n));
-    assertAllocationsExact(a, pool); // throws on sum/index violation
+    assertAllocationsExact(a, pool); // throws on sum/shape violation
     const base = Math.floor(pool / n);
     const r = pool - base * n;
-    const big = a.filter((x) => x.amountPaise === base + 1).length;
+    const big = Object.values(a).filter((x) => x === base + 1).length;
     if (big !== r) throw new Error('largest-remainder count wrong (pool=' + pool + ', n=' + n + ')');
   }
 });
@@ -167,7 +172,7 @@ check('allocate: no rounding drift across many jobs (fuzz)', () => {
     const a = allocateLargestRemainder(studentSharePaise, st);
     assertAllocationsExact(a, studentSharePaise);
     totalPool += studentSharePaise;
-    totalAllocated += a.reduce((s, x) => s + x.amountPaise, 0);
+    totalAllocated += Object.values(a).reduce((s, x) => s + x, 0);
   }
   eq(totalAllocated, totalPool);
 });

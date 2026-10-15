@@ -317,8 +317,8 @@ let job1Id, job2Id;
     eq(job.amountPaise, 100000);
     eq(job.committeeSharePaise, 10000);
     eq(job.studentSharePaise, 90000);
-    eq(job.allocations.length, 3);
-    eq(job.allocations.reduce((s, a) => s + a.amountPaise, 0), 90000);
+    eq(Object.keys(job.allocations).length, 3);
+    eq(Object.values(job.allocations).reduce((s, x) => s + x, 0), 90000);
     eq(getDoc(C).balancePaise, 10000);
     S.forEach((e) => {
       eq(bal(e), 30000, 'student ' + e);
@@ -336,7 +336,7 @@ let job1Id, job2Id;
     eq(job.amountPaise, 99999);
     eq(job.committeeSharePaise, 9999);
     eq(job.studentSharePaise, 90000);
-    eq(job.allocations.reduce((s, a) => s + a.amountPaise, 0), 90000);
+    eq(Object.values(job.allocations).reduce((s, x) => s + x, 0), 90000);
     eq(getDoc(C).balancePaise, 19999);
   });
 
@@ -356,7 +356,7 @@ let job1Id, job2Id;
     eq(getDoc(C).balancePaise, 10000 + 9999 + 10 + 100);
     const job = jobByName('Uneven');
     eq(job.studentCount, 4);
-    eq(job.allocations.reduce((s, a) => s + a.amountPaise, 0), 905);
+    eq(Object.values(job.allocations).reduce((s, x) => s + x, 0), 905);
   });
 
   await check('addJob duplicate job id → rejected, nothing paid', async () => {
@@ -405,7 +405,9 @@ let job1Id, job2Id;
     const a0 = bal('a@jkss.in'), b0 = bal('b@jkss.in'), c0 = bal('c@jkss.in'), d0 = bal('d@jkss.in');
     const c0c = getDoc(C).balancePaise;
     await api.deleteJob(job1Id);
-    if (mock.docs.has('jobs/' + job1Id)) throw new Error('job doc not deleted');
+    // v3.2: jobs are TOMBSTONED, never deleted (allocation history is audit).
+    const jobDoc = getDoc('jobs/' + job1Id);
+    if (!jobDoc || jobDoc.status !== 'reversed') throw new Error('job not tombstoned (status=) ' + (jobDoc && jobDoc.status));
     eq(bal('a@jkss.in'), a0 - 30000);
     eq(bal('b@jkss.in'), b0 - 30000);
     eq(bal('c@jkss.in'), c0 - 30000); // removed student debited by original alloc
@@ -419,9 +421,9 @@ let job1Id, job2Id;
     eq(txnsOf('d@jkss.in').some((x) => x.jobId === job1Id), false);
   });
 
-  await check('re-deleting a deleted job throws; deleting again never double-reverses', async () => {
+  await check('re-reversing a tombstoned job throws; never double-reverses', async () => {
     const a0 = bal('a@jkss.in');
-    await assertThrowsAsync(() => api.deleteJob(job1Id), /not found/i);
+    await assertThrowsAsync(() => api.deleteJob(job1Id), /already reversed/i);
     eq(bal('a@jkss.in'), a0);
   });
 
