@@ -93,6 +93,7 @@ function recordPasswordReset(data, { username, identifier, password, by = 'admin
   if (student) {
     student.password = password;
     student.passwordResetAt = at;
+    student.passwordSource = 'reset-random';
     student.status = 'password-reset';
   } else {
     data.students.push({

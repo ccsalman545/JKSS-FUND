@@ -18,7 +18,10 @@
 //   * sign-in works with a correct password and is rejected with a wrong one,
 //   * an account WITHOUT a pre-authorized profile cannot reach a profile,
 //   * plaintext passwords never reach Firestore,
-//   * password reset and legacy identity migration work and are idempotent.
+//   * password reset and legacy identity migration work and are idempotent,
+//   * (section 11, last) the opt-in shared initial password works and is safe:
+//     bad files are refused, nothing is printed or stored, reruns never change an
+//     existing password, and an unrostered synthetic identity blocks writes.
 //
 // Run (via firebase-tools, which provides Java + the emulators):
 //   cd firebase
@@ -41,6 +44,7 @@ const ROSTER = path.join(REPO_ROOT, 'tools', 'provision', 'roster.json');
 const identity = require(path.join(REPO_ROOT, 'mobile', 'src', 'identity.js'));
 const { readCredentials, modeOf } = require('../lib/credentials');
 const { signInWithPassword } = require('../lib/firebase');
+const planLib = require('../lib/plan');
 
 const admin = require('firebase-admin');
 const app = admin.initializeApp({ projectId: PROJECT });
@@ -72,6 +76,24 @@ async function restGet(idToken, docPath) {
 }
 // '@' is a legal path character, so keep it literal (no %40 for the emulator to decode).
 const enc = (id) => encodeURI(id);
+
+// A fresh random shared-style password that satisfies the tool's own rules
+// (generated at run time: it is never written into the repository).
+function freshSharedPassword() {
+  const sp = require(path.join(REPO_ROOT, 'tools', 'provision', 'lib', 'shared-password.js'));
+  const roster = planLib.buildRoster(JSON.parse(fs.readFileSync(ROSTER, 'utf8')));
+  for (;;) {
+    const pw = require('crypto').randomBytes(12).toString('base64url').slice(0, 14) + 'A7';
+    if (sp.validateSharedPassword(pw, { students: roster }).ok) return pw;
+  }
+}
+// Empties the Auth and Firestore EMULATOR project (documented emulator reset
+// endpoints; never a real project). Used only for the last section.
+async function clearEmulatorProject() {
+  const a = await fetch('http://' + process.env.FIREBASE_AUTH_EMULATOR_HOST + '/emulator/v1/projects/' + PROJECT + '/accounts', { method: 'DELETE' });
+  const f = await fetch('http://' + process.env.FIRESTORE_EMULATOR_HOST + '/emulator/v1/projects/' + PROJECT + '/databases/(default)/documents', { method: 'DELETE' });
+  if (!a.ok || !f.ok) throw new Error('could not clear the emulator (auth ' + a.status + ', firestore ' + f.status + ')');
+}
 
 async function check(name, fn) {
   try {
@@ -304,7 +326,7 @@ async function countUsers() {
     eq(fs.readFileSync(CRED_FILE, 'utf8'), credBytes, 'credentials file must be untouched');
   });
   await check('after the rerun the ORIGINAL passwords still work (never reset)', async () => {
-    for (const username of ['thangal', 'muhsin.chelakkulam', 'adil.jr']) {
+    for (const username of ['sayyid.zain', 'muhsin.chelakkulam', 'adil.jr']) {
       const res = await signInWithPassword({ identifier: identity.identifierFor(username), password: createdPasswords.get(username) });
       ok(res.ok, 'password reset detected for ' + username + ' (' + res.code + ')');
     }
@@ -312,12 +334,12 @@ async function countUsers() {
 
   /* ------------------------------ 6. login ------------------------------ */
   await check('VALID password signs in (student)', async () => {
-    const res = await signInWithPassword({ identifier: identity.identifierFor('thangal'), password: createdPasswords.get('thangal') });
+    const res = await signInWithPassword({ identifier: identity.identifierFor('sayyid.zain'), password: createdPasswords.get('sayyid.zain') });
     ok(res.ok, 'sign-in failed: ' + res.code);
     ok(res.idToken, 'no idToken returned');
   });
   await check('INVALID password is rejected (student)', async () => {
-    const res = await signInWithPassword({ identifier: identity.identifierFor('thangal'), password: createdPasswords.get('thangal') + 'x' });
+    const res = await signInWithPassword({ identifier: identity.identifierFor('sayyid.zain'), password: createdPasswords.get('sayyid.zain') + 'x' });
     eq(res.ok, false, 'a wrong password must never sign in');
   });
   await check('an unknown username is rejected', async () => {
@@ -340,14 +362,14 @@ async function countUsers() {
   // Every check below uses a real ID token minted by the Auth emulator and
   // the rules in firebase/firestore.rules (loaded by `firebase emulators:exec`).
   await check('rules: a pre-authorized, verified username student reads its own profile and the committee', async () => {
-    const id = identity.identifierFor('thangal');
-    const res = await signInWithPassword({ identifier: id, password: createdPasswords.get('thangal') });
+    const id = identity.identifierFor('sayyid.zain');
+    const res = await signInWithPassword({ identifier: id, password: createdPasswords.get('sayyid.zain') });
     ok(res.ok, 'sign-in failed: ' + res.code);
     eq(await restGet(res.idToken, 'users/' + enc(id)), 200, 'own profile must be readable');
     eq(await restGet(res.idToken, 'meta/committee'), 200, 'committee must be readable');
   });
   await check('rules: that username student is DENIED another student profile', async () => {
-    const res = await signInWithPassword({ identifier: identity.identifierFor('thangal'), password: createdPasswords.get('thangal') });
+    const res = await signInWithPassword({ identifier: identity.identifierFor('sayyid.zain'), password: createdPasswords.get('sayyid.zain') });
     ok(res.ok, 'sign-in failed: ' + res.code);
     eq(await restGet(res.idToken, 'users/' + enc(identity.identifierFor('shafi'))), 403, 'another profile');
   });
@@ -525,6 +547,124 @@ async function countUsers() {
     const b = spawnSync(process.execPath, [CLI, 'frobnicate'], { encoding: 'utf8' });
     eq(b.status, 2);
     return null;
+  });
+
+  /* ------------- 11. opt-in shared initial password (empty project) ----- */
+  // Starts from an EMPTY emulator project (sections 1–10 are finished), so the
+  // shared mode is tested on its own: 24 new accounts, no legacy profile.
+  await clearEmulatorProject();
+  eq((await auth.listUsers(1000)).users.length, 0, 'emulator must be empty before section 11');
+  const SHARED_CREDS = path.join(TMP, 'shared-credentials.json');
+  const SHARED_FILE = path.join(TMP, 'shared-initial-password.txt');
+  const BAD_FILE = path.join(TMP, 'bad-shared.txt');
+  const OTHER_FILE = path.join(TMP, 'other-shared.txt');
+  const SHARED_PW = freshSharedPassword();
+  const sharedArgs = (file, extra = []) => ['apply', '--project', PROJECT, '--roster', ROSTER, '--out', OUT,
+    '--credentials-file', SHARED_CREDS, '--shared-password-file', file].concat(extra);
+  const writeSecret = (file, text) => { fs.writeFileSync(file, text, { mode: 0o600 }); fs.chmodSync(file, 0o600); };
+  const signIn = (username, password) => signInWithPassword({ identifier: identity.identifierFor(username), password });
+
+  await check('shared mode: a file readable by others is REFUSED and nothing is written', async () => {
+    writeSecret(SHARED_FILE, SHARED_PW + '\n');
+    fs.chmodSync(SHARED_FILE, 0o644);
+    const r = run(sharedArgs(SHARED_FILE, ['--apply']));
+    eq(r.code, 1, 'must refuse');
+    ok(/group\/other|chmod 600/.test(r.stderr + r.stdout), 'reason: ' + r.stderr);
+    ok(!(r.stdout + r.stderr).includes(SHARED_PW), 'the password must never be printed');
+    eq((await auth.listUsers(1000)).users.length, 0, 'no Auth account may be created');
+    eq(fs.existsSync(SHARED_CREDS), false, 'no credentials file may be written');
+    fs.chmodSync(SHARED_FILE, 0o600);
+  });
+  await check('shared mode: malformed files are REFUSED (too short, two lines, contains a student name)', async () => {
+    const cases = [['short1A', /at least 12/], [SHARED_PW + '\nextra', /exactly one line/], ['Muhsin2026Secure', /must not contain/]];
+    for (const [content, re] of cases) {
+      writeSecret(BAD_FILE, content + '\n');
+      const r = run(sharedArgs(BAD_FILE, ['--apply']));
+      eq(r.code, 1, 'must refuse: ' + re);
+      ok(re.test(r.stderr + r.stdout), 'reason for ' + re + ': ' + r.stderr);
+      ok(!(r.stdout + r.stderr).includes(content), 'the rejected text must never be echoed');
+    }
+    eq((await auth.listUsers(1000)).users.length, 0, 'still no Auth account');
+  });
+  await check('shared mode: a DRY RUN validates the file and writes nothing', async () => {
+    writeSecret(SHARED_FILE, SHARED_PW + '\n');
+    const r = run(sharedArgs(SHARED_FILE)).expectCode(0);
+    ok(/DRY RUN/.test(r.stdout), 'must say DRY RUN');
+    ok(/owner shared initial password/.test(r.stdout), 'password mode must be shown');
+    ok(!(r.stdout + r.stderr).includes(SHARED_PW), 'never printed');
+    eq((await auth.listUsers(1000)).users.length, 0, 'a dry run creates nothing');
+    eq(await countUsers(), 0, 'a dry run creates no profile');
+    eq(fs.existsSync(SHARED_CREDS), false);
+  });
+  await check('shared mode --apply creates 24 accounts with the SHARED password (sign-in works)', async () => {
+    const r = run(sharedArgs(SHARED_FILE, ['--apply'])).expectCode(0);
+    ok(/APPLY COMPLETE/.test(r.stdout));
+    ok(!(r.stdout + r.stderr).includes(SHARED_PW), 'never printed');
+    const emails = (await auth.listUsers(1000)).users.map((u) => u.email);
+    eq(emails.length, 24, 'one Auth account per roster student');
+    ok(emails.includes(identity.identifierFor('sayyid.zain')), 'Sayyid Zain has an account');
+    ok(!emails.includes(identity.identifierFor('thangal')), 'Thangal has no account');
+    eq(await countUsers(), 24, 'one pre-authorized profile per student');
+    for (const username of ['sayyid.zain', 'adil.jr', 'salman']) {
+      const res = await signIn(username, SHARED_PW);
+      ok(res.ok, 'shared password must sign in ' + username + ': ' + res.code);
+    }
+    const wrong = await signIn('adil.jr', SHARED_PW + 'x');
+    eq(wrong.ok, false, 'a wrong password is rejected');
+  });
+  await check('shared mode credentials: 0600, 24 usernames, NO password anywhere in the file or Firestore', async () => {
+    eq(modeOf(SHARED_CREDS), '600');
+    const text = fs.readFileSync(SHARED_CREDS, 'utf8');
+    ok(!text.includes(SHARED_PW), 'the shared password must not be in the credentials file');
+    const creds = readCredentials(SHARED_CREDS);
+    eq(creds.students.length, 24);
+    creds.students.forEach((st) => {
+      ok(!('password' in st), 'no password field for ' + st.username);
+      eq(st.passwordSource, 'owner-shared-initial', 'source for ' + st.username);
+    });
+    const docs = JSON.stringify((await db.collection('users').get()).docs.map((d) => d.data()));
+    ok(!docs.includes(SHARED_PW), 'the shared password must never reach Firestore');
+  });
+  await check('shared mode RERUN with a DIFFERENT password changes NO existing account (no reset)', async () => {
+    const OTHER = freshSharedPassword();
+    ok(OTHER !== SHARED_PW);
+    writeSecret(OTHER_FILE, OTHER + '\n');
+    const before = fs.readFileSync(SHARED_CREDS, 'utf8');
+    run(sharedArgs(OTHER_FILE, ['--apply'])).expectCode(0);
+    eq((await auth.listUsers(1000)).users.length, 24, 'no duplicate accounts');
+    eq(fs.readFileSync(SHARED_CREDS, 'utf8'), before, 'the credentials file must be untouched');
+    ok((await signIn('adil.jr', SHARED_PW)).ok, 'the ORIGINAL shared password still works (never reset)');
+    eq((await signIn('adil.jr', OTHER)).ok, false, 'the new file password must NOT have been applied');
+  });
+  await check('reset-password (explicit) gives ONE student a NEW RANDOM password; the shared one stops working', async () => {
+    const r = run(['reset-password', '--username', 'adil.jr', '--project', PROJECT, '--credentials-file', SHARED_CREDS, '--apply']).expectCode(0);
+    ok(/RESET COMPLETE/.test(r.stdout));
+    ok(!(r.stdout + r.stderr).includes(SHARED_PW), 'never printed');
+    const adil = readCredentials(SHARED_CREDS).students.find((st) => st.username === 'adil.jr');
+    ok(adil.password && adil.password !== SHARED_PW, 'reset must produce a new password');
+    ok((await signIn('adil.jr', adil.password)).ok, 'the new random password signs in');
+    eq((await signIn('adil.jr', SHARED_PW)).ok, false, 'the shared password must stop working for that student only');
+    ok((await signIn('sayyid.zain', SHARED_PW)).ok, 'other students keep the shared password');
+  });
+  await check('an UNROSTERED synthetic login blocks apply (nothing written) until --allow-unrostered; it is left untouched', async () => {
+    const ORPHAN = identity.identifierFor('thangal');
+    await auth.createUser({ email: ORPHAN, password: 'Orphan123!x', emailVerified: true });
+    await db.collection('users').doc(ORPHAN).set({
+      email: ORPHAN, role: 'student', full_name: 'Thangal', avatar: '', balancePaise: 4200, balance: 42,
+    }); // txnSeq deliberately absent: it must stay absent (frozen)
+    const before = (await auth.listUsers(1000)).users.length;
+    const r = run(sharedArgs(SHARED_FILE, ['--apply']));
+    eq(r.code, 1, 'must refuse');
+    ok(/not on the roster/.test(r.stderr + r.stdout), 'reason: ' + r.stderr);
+    eq((await auth.listUsers(1000)).users.length, before, 'nothing may be written');
+    const bal = (await db.collection('users').doc(ORPHAN).get()).data();
+    eq(bal.balancePaise, 4200, 'the orphan balance is untouched');
+    ok(!('txnSeq' in bal), 'the orphan must not be backfilled');
+    run(sharedArgs(SHARED_FILE, ['--apply', '--allow-unrostered'])).expectCode(0);
+    eq((await auth.listUsers(1000)).users.length, before, 'still no new account (all 24 exist)');
+    const after = (await db.collection('users').doc(ORPHAN).get()).data();
+    eq(after.balancePaise, 4200, 'the orphan balance is still untouched with --allow-unrostered');
+    ok(!('txnSeq' in after), 'the orphan is still not backfilled with --allow-unrostered');
   });
 
   fs.rmSync(TMP, { recursive: true, force: true });

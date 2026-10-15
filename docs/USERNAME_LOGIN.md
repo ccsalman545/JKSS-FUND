@@ -62,7 +62,7 @@ New/changed files:
 ```
         what the student types              what Firebase Authentication stores
    ┌────────────────────────────┐        ┌────────────────────────────────────────────────┐
-   │  username:  thangal        │  ───►  │  email:    thangal@students.jkss-fund.invalid  │
+   │  username:  sayyid.zain    │  ───►  │  email:  sayyid.zain@students.jkss-fund.invalid│
    │  password:  <temporary>    │        │  password: <the same password>                 │
    └────────────────────────────┘        └────────────────────────────────────────────────┘
                                                           │
@@ -96,7 +96,7 @@ function keeps `firestore.rules` untouched.
 
 | # | Name | Username | Internal identifier |
 |---|------|----------|---------------------|
-| 1 | Thangal | `thangal` | `thangal@students.jkss-fund.invalid` |
+| 1 | Sayyid Zain | `sayyid.zain` | `sayyid.zain@students.jkss-fund.invalid` |
 | 2 | Shafi | `shafi` | `shafi@students.jkss-fund.invalid` |
 | 3 | Aboobacker | `aboobacker` | `aboobacker@students.jkss-fund.invalid` |
 | 4 | Salman | `salman` | `salman@students.jkss-fund.invalid` |
@@ -210,7 +210,9 @@ The plan prints, and writes as JSON (mode 0600) to `tools/provision/reports/`:
 * `students needing MANUAL REVIEW (blocking)` — nothing is created for these,
 * `students held for MIGRATION` — an existing real-email profile was matched,
 * `WARNING — POSSIBLE (unconfirmed) LEGACY PROFILES`,
-* `EXISTING PROFILES NOT IN THE ROSTER (left completely untouched)`,
+* `EXISTING PROFILES NOT IN THE ROSTER (left completely untouched)` and
+  `NOT on roster (left untouched)` for synthetic student identities — `apply`
+  refuses to write while any exist (see §4.6),
 * `txnSeq:0 BACKFILL` — every user doc missing the field, by name,
 * per-student actions (including `MIGRATION-REVIEW` markers).
 
@@ -227,7 +229,9 @@ What `--apply` does, and **only** that:
 1. Creates a Firebase Auth user per creatable student:
    `email = <username>@students.jkss-fund.invalid`, `emailVerified = true`
    (no verification mail is ever sent), `displayName = full name`, and a
-   **fresh 16-character CSPRNG password** for that student.
+   **fresh 16-character CSPRNG password** for that student — or, only if you
+   pass `--shared-password-file`, the owner's shared initial password for the
+   accounts that do not exist yet (§4.6).
 2. Creates the pre-authorized profile `users/{identifier}` in the exact shape
    the app and the rules use (`email, role: 'student', full_name, avatar,
    balancePaise: 0, balance: 0, txnSeq: 0, createdAt`).
@@ -235,9 +239,10 @@ What `--apply` does, and **only** that:
    ledgers and both admin documents otherwise untouched).
 4. Writes the credentials file (below) and a JSON report.
 
-What it never does: reset a password, overwrite a profile, touch a balance, a
-ledger entry, a job, the committee document, the admin Auth account, an
-unmatched profile, or run a second time destructively (**reruns are idempotent**
+What it never does: reset a password (including with the shared password file),
+overwrite a profile, touch a balance, a ledger entry, a job, the committee
+document, the admin Auth account, an unmatched profile, a synthetic identity that
+is NOT on the roster, or run a second time destructively (**reruns are idempotent**
 — they report `auth-exists (password NOT touched)` / `profile-exists`).
 
 ### 4.4 The credentials file (temporary passwords)
@@ -248,7 +253,9 @@ unmatched profile, or run a second time destructively (**reruns are idempotent**
   `.gitignore`); a test asserts both protections exist.
 * Format: `{ project, domain, students: [{ index, name, username, identifier,
   password, status }], passwordResets: [ … ] }` — **plaintext passwords, on
-  purpose**, because they must be handed to students. It is the only place a
+  purpose**, because they must be handed to students. In shared-password mode
+  (§4.6) the records carry `passwordSource: "owner-shared-initial"` and **no
+  password field**. It is the only place a
   password is ever written; Firestore never sees one (an E2E test scans every
   document for the generated passwords).
 * Distribute each password to its student privately. Then move the file into a
@@ -275,9 +282,102 @@ The tool refuses to run this against `jkss-fund` (production).
 
 ---
 
+### 4.6 Optional: an owner-supplied SHARED initial password (opt-in)
+
+The default is unchanged: **every new account gets its own random password.**
+Use the shared mode only if you deliberately want the accounts that are created
+in this run to start with **one** password that you choose. It is opt-in: it is
+used only when you pass `--shared-password-file`.
+
+**Trade-offs (read before you choose it).** Anyone who learns the shared password
+can sign in to every account that still uses it. Each student must change it
+after the first sign-in. **The app does not enforce that change.** It shows the
+advice "Change the temporary password after your first sign-in" (LoginScreen),
+and nothing blocks a student who keeps using the shared password. Enforcing it
+would need a profile flag plus a Firestore rules change, and neither exists.
+
+**Exact local setup** (do this on your own computer, not in the repository):
+
+```bash
+# 1. A private folder OUTSIDE the repository
+mkdir -p ~/jkss-secrets && chmod 700 ~/jkss-secrets
+
+# 2. Create the one-line file owner-only from the start (umask 077), typing the
+#    password at the prompt so it is not echoed or kept in shell history
+(umask 077; read -rs -p 'Shared initial password: ' SHARED_PW; \
+  printf '%s\n' "$SHARED_PW" > ~/jkss-secrets/shared-initial-password.txt; \
+  unset SHARED_PW; echo)
+
+# 3. Confirm the permissions: must show -rw------- (owner read/write only)
+ls -l ~/jkss-secrets/shared-initial-password.txt
+```
+
+The tool checks the file before it contacts Firebase, and refuses to continue
+unless **all** of these hold:
+
+* a regular file (not a symbolic link), owned by your user, with **no** group or
+  other permission bits (`chmod 600` fixes it);
+* exactly **one line** (a single trailing newline is allowed);
+* if the file is inside the repository, it must be git-ignored (keep it outside);
+* 12 to 128 printable ASCII characters, no spaces, at least 6 different
+  characters, at least one letter and one digit (the app's policy);
+* it must not contain any roster student's **username or name**, nor any name
+  part of 4 or more letters (for example `sayyid`, `muhsin`).
+
+The password is never printed, logged or written to the credentials file or the
+JSON report. The credentials file records only `passwordSource: owner-shared-initial`
+for each new account.
+
+**Safe dry run first** (writes nothing; it reads the project in read-only mode
+and reports what would happen with the shared password):
+
+```bash
+cd tools/provision
+npm install
+node provision.js apply --project jkss-fund \
+  --credentials ~/jkss-fund-admin.json \
+  --shared-password-file ~/jkss-secrets/shared-initial-password.txt
+# expect: "DRY RUN — nothing was written." and
+#         "password mode ... owner shared initial password for NEW accounts"
+# If the file is refused, the tool stops BEFORE it connects to Firebase.
+```
+
+Then, only after the plan is reviewed and approved, the write (the live project
+needs the id twice):
+
+```bash
+node provision.js apply --project jkss-fund --confirm-project jkss-fund \
+  --credentials ~/jkss-fund-admin.json \
+  --shared-password-file ~/jkss-secrets/shared-initial-password.txt --apply
+```
+
+**What the shared mode does not do:**
+
+* It never changes an existing account's password. A rerun with the file creates
+  only the accounts that do not exist yet. Accounts created earlier keep their
+  current passwords (in a mixed state, the older ones keep theirs).
+* It is not a reset. To change an existing account, use `reset-password`
+  (one student at a time, always a **random** password, §6). Do not use the
+  shared file for that.
+
+**Synthetic identities that are not on the roster.** If the project has a
+student login or profile whose identifier is **not** on `roster.json` (for
+example a student removed from the roster), the dry run prints a `!!`
+warning that names it, and the plan shows the count on the line
+`NOT on roster (left untouched)`. `--apply` then **refuses to write** and changes
+nothing. Only if you have confirmed that each one is intentional, add
+`--allow-unrostered`. Those records are still left untouched (no backfill, no
+write, no deletion). Decide with the owner before using that flag on production.
+
+**After the apply:** hand the shared password to each student privately, and ask
+them to change it. Then delete the password file, or keep it only in your
+password manager. Your next step is the change itself; the app will not check it.
+
+---
+
 ## 5. Students: first sign-in and changing the password
 
-1. The student opens the app and types the **username** (`thangal`,
+1. The student opens the app and types the **username** (`sayyid.zain`,
    `muhsin.chelakkulam`, …) and the temporary password.
 2. The app maps the username to the identifier and signs in with Firebase
    Email/Password. On success it reads `users/{identifier}` — the profile the
@@ -287,6 +387,10 @@ The tool refuses to run this against `jkss-fund` (production).
    temporary password and chooses a new one. The app enforces: ≥ 6 characters,
    at least one letter and one number, not derived from their own
    username/name, and different from the current password.
+   **This change is advised, not required.** The app does not enforce a first-login
+   password change: nothing blocks the student from continuing to use the temporary
+   password. If the password is the owner's shared initial password (§4.6), the admin
+   must ask each student to make the change. The tool cannot check it.
 4. The student is added to every future 90% split from the moment their profile
    exists (the job allocation uses the roster of `users` documents).
 
@@ -302,10 +406,10 @@ it, and an email-based reset would be useless. **The admin resets the password.*
 ```bash
 cd tools/provision
 # dry run first (shows what would happen):
-node provision.js reset-password --username thangal --project jkss-fund
+node provision.js reset-password --username sayyid.zain --project jkss-fund
 
 # then:
-node provision.js reset-password --username thangal --project jkss-fund \
+node provision.js reset-password --username sayyid.zain --project jkss-fund \
   --credentials ~/jkss-fund-admin.json --apply
 ```
 
@@ -320,7 +424,7 @@ The Console's **"Reset password"** button *emails* the user, so it does nothing
 here. Use instead:
 
 1. Console → **Authentication → Users** → find the student's identifier
-   (`thangal@students.jkss-fund.invalid`).
+   (`sayyid.zain@students.jkss-fund.invalid`).
 2. **Delete account**, then **Add user** with the *same* identifier and a new
    temporary password (the identifier is the account's email — typing it wrongly
    would create an unusable account).
@@ -730,12 +834,12 @@ change only at step 7, and the held students change only through §7.2.
 |---|---|---|
 | `mobile/test/identity.test.js` | local + CI | **63 passed, 0 failed** — normalization, collisions, identifier mapping, password policy, 20k-input fuzz |
 | `mobile/test/accounting.test.js` | local + CI | **31 passed, 0 failed** — paise math unchanged (the money invariants) |
-| `mobile/test/api.mock.test.js` | local + CI | **37 passed, 0 failed** — username login (real `auth/*` error codes), no-enumeration error text, authorization gate, ledger identity, all transaction flows |
-| `tools/provision/test/plan.test.js` | local + CI | **51 passed, 0 failed** — includes the D-1 frozen-profile checks; roster-hold validation and enforcement (incl. the explicit hold on a legacy-matched student),  roster → username, collision rules, ambiguity/weak-match handling, held-back students, admin preservation, safety gates, CLI parsing, **docs↔code mapping drift**, and **docs↔CLI drift** (every command/flag printed in these docs must exist in the tool) |
-| `tools/provision/test/apply.test.js` | local + CI | **4 passed, 0 failed** — D-1 through the real `apply` path (Firebase stubbed): a held legacy profile gets no Auth account, no profile and no `txnSeq`; eligible and former profiles are still backfilled; a roster hold freezes too |
-| `tools/provision/test/passwords.test.js` | local + CI | **15 passed, 0 failed** — CSPRNG passwords (20k uniqueness), unambiguous alphabet, policy compliance, 0600 credentials file, never-overwrite |
+| `mobile/test/api.mock.test.js` | local + CI | **38 passed, 0 failed** — username login (real `auth/*` error codes), no-enumeration error text, authorization gate, ledger identity, all transaction flows |
+| `tools/provision/test/plan.test.js` | local + CI | **55 passed, 0 failed** — the approved 24-name roster (Sayyid Zain replaces Thangal), synthetic identities NOT on the roster reported and frozen (never backfilled) — includes the D-1 frozen-profile checks; roster-hold validation and enforcement (incl. the explicit hold on a legacy-matched student),  roster → username, collision rules, ambiguity/weak-match handling, held-back students, admin preservation, safety gates, CLI parsing, **docs↔code mapping drift**, and **docs↔CLI drift** (every command/flag printed in these docs must exist in the tool) |
+| `tools/provision/test/apply.test.js` | local + CI | **19 passed, 0 failed** — D-1 through the real `apply` path (Firebase stubbed): a held legacy profile gets no Auth account, no profile and no `txnSeq`; eligible and former profiles are still backfilled; a roster hold freezes too; shared mode (new accounts only, existing accounts never re-passworded, nothing printed or stored, dry run writes nothing); bad, missing, insecure or malformed password files refused with nothing written; an unrostered identity blocks writes unless `--allow-unrostered`, and is then left untouched |
+| `tools/provision/test/passwords.test.js` | local + CI | **33 passed, 0 failed** — CSPRNG passwords (20k uniqueness), unambiguous alphabet, policy compliance, 0600 credentials file, never-overwrite; shared-password rules (length, ASCII, policy, roster names/tokens, 0600/0400 only, no symlink, one line, git-ignore inside the repo) |
 | `firebase/test/rules.test.js` | CI (`Firestore rules`, emulator) | **121 scenarios** in the production rules engine (section 14: 22 held-account gate scenarios; section 15: 10 pre-authorization gate scenarios; the 111-scenario run `38729530740` succeeded on `cd63dbe`). The 121 count is confirmed only by the CI run on the verification-gate commit. Before the gate: 89 passed (14 new synthetic-identifier scenarios: pre-authorization, unauthorized-account lockout, withdrawals/credits/reversals with synthetic ids, no rules loosening) |
-| `tools/provision/test/emulator.test.js` | CI (`provisioning-e2e`, Auth+Firestore emulators) | **37 checks** (31 before the pre-authorization gate, plus 6 in §6b that read through the rules with real ID tokens; the CI run on the verification-gate commit confirms the result) — a dry run creates no Auth user and touches no document, 23 accounts created idempotently, admin account+password and both admin docs preserved, balances/ledgers byte-identical, no plaintext password in Firestore, valid/invalid password sign-in, unauthorized student has no profile, reset-password, identity migration with backup, safety gates |
+| `tools/provision/test/emulator.test.js` | CI (`provisioning-e2e`, Auth+Firestore emulators) | **45 checks** (37 before the shared-password work, plus 8 in §11, which starts from an emptied emulator project: refused bad-permission and malformed files, a dry run, 24 shared-password accounts that sign in, no password in the credentials file or Firestore, a rerun with another password changes nothing, an explicit random reset, and an unrostered identity blocking writes; the CI run on the pushed commit confirms the result) — a dry run creates no Auth user and touches no document, 23 accounts created idempotently, admin account+password and both admin docs preserved, balances/ledgers byte-identical, no plaintext password in Firestore, valid/invalid password sign-in, unauthorized student has no profile, reset-password, identity migration with backup, safety gates |
 
 Exact commands (also in `SECURITY_REVIEW.md` §5):
 

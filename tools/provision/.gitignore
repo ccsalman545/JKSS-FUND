@@ -12,6 +12,10 @@ credentials*.json
 *firebase-adminsdk*.json
 *-key.json
 
+# Owner-supplied shared initial password file (apply --shared-password-file)
+shared-initial-password*
+*shared-password*.txt
+
 # Reports (contain live user ids / balances) and pre-migration backups
 reports/
 backups/

@@ -9,7 +9,7 @@ payment **10% → committee fund / 90% → split among students (paise-exact)**.
 are in **Indian Rupees (₹)**.
 
 > **v3.0 — username logins for students.** Every student gets a stable username
-> (`thangal`, `muhsin.chelakkulam`, …) mapped deterministically to a synthetic Firebase
+> (`sayyid.zain`, `muhsin.chelakkulam`, …) mapped deterministically to a synthetic Firebase
 > identifier (`<username>@students.jkss-fund.invalid`, an RFC 2606 non-deliverable domain),
 > provisioned by a one-time local tool ([`tools/provision`](./tools/provision)) that is
 > dry-run by default, generates **CSPRNG temporary passwords** (one per student, stored in

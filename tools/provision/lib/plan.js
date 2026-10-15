@@ -417,6 +417,30 @@ function buildPlan({ roster, live = {}, projectId = null, domain = STUDENT_EMAIL
     (b.candidates || []).forEach((c) => frozenProfiles.set(String(c.id), 'ambiguous match — manual review'));
   });
 
+  // Synthetic student identities that are NOT on the roster (for example a
+  // student removed from roster.json, whose login or profile still exists).
+  // The tool never deletes, renames or rewrites them. `apply` refuses to write
+  // while any exist unless --allow-unrostered is given, and even then they are
+  // frozen: no txnSeq backfill and no other write.
+  const rosterIds = new Set(students.map((e) => String(e.identifier).toLowerCase()));
+  const unrosteredMap = new Map(); // identifier -> { id, profile, auth, balancePaise, removedAt }
+  (live.profiles || []).forEach((p) => {
+    const id = String(p.id);
+    if (p.role === 'admin' || !identity.isStudentIdentifier(id) || rosterIds.has(id.toLowerCase())) return;
+    unrosteredMap.set(id, { id, profile: true, auth: false, balancePaise: balancePaiseOf(p), removedAt: !!p.removedAt });
+  });
+  (live.authUsers || []).forEach((u) => {
+    const id = String(u && u.email || '');
+    if (!id || !identity.isStudentIdentifier(id) || rosterIds.has(id.toLowerCase())) return;
+    const cur = unrosteredMap.get(id) || { id, profile: false, auth: false, balancePaise: null, removedAt: false };
+    cur.auth = true;
+    unrosteredMap.set(id, cur);
+  });
+  const unrostered = [...unrosteredMap.values()].sort((a, b) => a.id.localeCompare(b.id));
+  unrostered.forEach((u) => {
+    if (u.profile) frozenProfiles.set(u.id, 'not on the roster — left untouched');
+  });
+
   const txnSeqBackfill = (live.profiles || [])
     .filter((p) => !Number.isInteger(p.txnSeq) && !frozenProfiles.has(String(p.id)))
     .map((p) => ({ id: String(p.id), role: p.role || 'student', removed: !!p.removedAt }));
@@ -442,6 +466,7 @@ function buildPlan({ roster, live = {}, projectId = null, domain = STUDENT_EMAIL
     txnSeqFrozenCount: txnSeqFrozen.length,
     frozenProfileCount: frozenProfiles.size,
     unmatchedProfiles: unmatched.map((p) => ({ id: String(p.id), role: p.role || 'student', balance: balancePaiseOf(p) })),
+    unrosteredCount: unrostered.length,
     liveJobs: (live.jobs || []).length,
     liveActiveJobs: (live.jobs || []).filter((j) => j.status !== 'reversed').length,
   };
@@ -454,6 +479,7 @@ function buildPlan({ roster, live = {}, projectId = null, domain = STUDENT_EMAIL
     weakMatches: weak,
     adminProfiles,
     unmatchedProfiles: summary.unmatchedProfiles,
+    unrostered,
     txnSeqBackfill,
     txnSeqFrozen,
     frozenProfileIds: [...frozenProfiles.keys()].sort(),

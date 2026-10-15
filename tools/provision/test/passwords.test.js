@@ -152,7 +152,126 @@ check('the repository root .gitignore repeats the same protections', () => {
   ok(/service-account/.test(gi), 'root ignore must cover service-account keys');
 });
 
+
+/* ------------------- the opt-in shared initial password ------------------- */
+const sharedPw = require('../lib/shared-password');
+const { spawnSync } = require('child_process');
+const sharedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jkss-shared-'));
+const ROSTER_STUDENTS = [
+  { name: 'Sayyid Zain', username: 'sayyid.zain' },
+  { name: 'Muhsin Chelakkulam', username: 'muhsin.chelakkulam' },
+  { name: 'Adil', username: 'adil' },
+];
+const GOOD = 'Kozhikode2026!';
+function secretFile(name, content, mode = 0o600) {
+  const f = path.join(sharedDir, name);
+  fs.writeFileSync(f, content, { mode });
+  fs.chmodSync(f, mode);
+  return f;
+}
+function throwsMatching(fn, re) {
+  try { fn(); } catch (e) {
+    if (!re.test(e.message)) throw new Error('wrong reason: ' + e.message);
+    if (e.message.includes(GOOD) || /Sayyid2026|Muhsin2026Secure/.test(e.message)) throw new Error('message echoes a password');
+    return;
+  }
+  throw new Error('expected a refusal');
+}
+
+check('shared password: a good, roster-safe password is accepted', () => {
+  ok(sharedPw.validateSharedPassword(GOOD, { students: ROSTER_STUDENTS }).ok);
+});
+check('shared password: the length rules (12 to 128) are enforced', () => {
+  ok(!sharedPw.validateSharedPassword('Abc12345678', { students: [] }).ok, '11 characters is too short');
+  ok(sharedPw.validateSharedPassword('Abcdefghij12', { students: [] }).ok, '12 characters is the minimum');
+  ok(!sharedPw.validateSharedPassword('A1b' + 'c'.repeat(126), { students: [] }).ok, '129 characters is too long');
+});
+check('shared password: printable ASCII only, no spaces or control characters', () => {
+  ok(!sharedPw.validateSharedPassword('Kozhikode 2026!', { students: [] }).ok, 'space');
+  ok(!sharedPw.validateSharedPassword('Kozhikode2026\u00e9!', { students: [] }).ok, 'non-ASCII');
+  ok(!sharedPw.validateSharedPassword('Kozhikode2026\t!', { students: [] }).ok, 'tab');
+});
+check('shared password: the app policy applies (letter AND digit, no common word)', () => {
+  ok(!sharedPw.validateSharedPassword('Kozhikodeonly!!', { students: [] }).ok, 'no digit');
+  ok(!sharedPw.validateSharedPassword('1234567890123', { students: [] }).ok, 'no letter');
+});
+check('shared password: at least 6 different characters', () => {
+  ok(!sharedPw.validateSharedPassword('Aaaaaaaaaaaa1', { students: [] }).ok, 'low variety');
+});
+check('shared password: must not contain any roster username, name, or name token (4+ letters)', () => {
+  ok(!sharedPw.validateSharedPassword('Sayyid9Mango!', { students: ROSTER_STUDENTS }).ok, 'name');
+  ok(!sharedPw.validateSharedPassword('Muhsin2026Secure', { students: ROSTER_STUDENTS }).ok, 'name token');
+  ok(!sharedPw.validateSharedPassword('Chelakkulam7x!', { students: ROSTER_STUDENTS }).ok, 'second name token');
+  ok(!sharedPw.validateSharedPassword('Zain2026-trust', { students: ROSTER_STUDENTS }).ok, 'zain token');
+  ok(sharedPw.validateSharedPassword('Kozhikode2026!', { students: ROSTER_STUDENTS }).ok, 'an unrelated word is fine');
+});
+check('shared password: the REAL roster rejects a password built from any student name', () => {
+  const roster = planLibForPw().buildRoster(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'roster.json'), 'utf8')));
+  ok(!sharedPw.validateSharedPassword('Sayyid2026!Mango', { students: roster }).ok, 'Sayyid Zain');
+  ok(!sharedPw.validateSharedPassword('Midlaj2026!Kozh', { students: roster }).ok, 'Midlaj');
+  ok(sharedPw.validateSharedPassword(GOOD, { students: roster }).ok, 'the example is accepted against the real roster');
+});
+check('shared file: a valid 0600 file is read (one trailing newline removed)', () => {
+  const f = secretFile('ok.txt', GOOD + '\n');
+  const r = sharedPw.readSharedPasswordFile(f, { students: ROSTER_STUDENTS });
+  eq(r.password, GOOD);
+  eq(r.length, GOOD.length);
+});
+check('shared file: CRLF line endings and a 0400 file are accepted', () => {
+  const f = secretFile('crlf.txt', GOOD + '\r\n', 0o400);
+  eq(sharedPw.readSharedPasswordFile(f, { students: ROSTER_STUDENTS }).password, GOOD);
+});
+check('shared file: a missing file is refused', () => {
+  throwsMatching(() => sharedPw.readSharedPasswordFile(path.join(sharedDir, 'nope.txt'), {}), /not found/);
+});
+check('shared file: a group- or other-readable file is refused (0644, 0640, 0604)', () => {
+  for (const mode of [0o644, 0o640, 0o604]) {
+    const f = secretFile('mode' + mode + '.txt', GOOD + '\n', mode);
+    throwsMatching(() => sharedPw.readSharedPasswordFile(f, {}), /group\/other/);
+  }
+});
+check('shared file: a symbolic link is refused', () => {
+  const real = secretFile('real.txt', GOOD + '\n');
+  const link = path.join(sharedDir, 'link.txt');
+  fs.symlinkSync(real, link);
+  throwsMatching(() => sharedPw.readSharedPasswordFile(link, {}), /symbolic link/);
+});
+check('shared file: a directory is refused', () => {
+  throwsMatching(() => sharedPw.readSharedPasswordFile(sharedDir, {}), /regular file/);
+});
+check('shared file: empty, two-line and oversized files are refused', () => {
+  throwsMatching(() => sharedPw.readSharedPasswordFile(secretFile('e.txt', '\n'), {}), /empty/);
+  throwsMatching(() => sharedPw.readSharedPasswordFile(secretFile('two.txt', GOOD + '\nagain\n'), {}), /exactly one line/);
+  throwsMatching(() => sharedPw.readSharedPasswordFile(secretFile('big.txt', 'A'.repeat(2000) + '1\n'), {}), /too large/);
+});
+check('shared file: the policy is applied to the file content (a name is refused, the reason is generic)', () => {
+  throwsMatching(() => sharedPw.readSharedPasswordFile(secretFile('name.txt', 'Muhsin2026Secure\n'),
+    { students: ROSTER_STUDENTS }), /must not contain/);
+});
+check('shared file: a file INSIDE the repository must be git-ignored (checked with git)', () => {
+  const repo = fs.mkdtempSync(path.join(sharedDir, 'repo-'));
+  spawnSync('git', ['init', '-q'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, '.gitignore'), 'secret-pass.txt\n');
+  const open = path.join(repo, 'plain-pass.txt');
+  fs.writeFileSync(open, GOOD + '\n', { mode: 0o600 });
+  throwsMatching(() => sharedPw.readSharedPasswordFile(open, { repoRoot: repo }), /NOT git-ignored/);
+  const ignored = path.join(repo, 'secret-pass.txt');
+  fs.writeFileSync(ignored, GOOD + '\n', { mode: 0o600 });
+  eq(sharedPw.readSharedPasswordFile(ignored, { repoRoot: repo }).password, GOOD, 'ignored file is accepted');
+});
+check('shared file: git-ignore protection exists in both .gitignore files (defence in depth)', () => {
+  const root = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.gitignore'), 'utf8');
+  const local = fs.readFileSync(path.join(__dirname, '..', '.gitignore'), 'utf8');
+  ok(root.includes('tools/provision/shared-initial-password'), 'root .gitignore');
+  ok(local.includes('shared-initial-password'), 'tools/provision/.gitignore');
+});
+check('shared file: the module never exposes the password through its error messages', () => {
+  throwsMatching(() => sharedPw.readSharedPasswordFile(secretFile('bad.txt', 'Sayyid2026!\n'), { students: ROSTER_STUDENTS }), /must not contain|at least/);
+});
+function planLibForPw() { return require('../lib/plan'); }
+
 fs.rmSync(tmpRoot, { recursive: true, force: true });
+fs.rmSync(sharedDir, { recursive: true, force: true });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail === 0 ? 0 : 1);

@@ -19,6 +19,8 @@ archive/**/data.json
 # (the local provisioning tool must never have its output committed)
 tools/provision/credentials.json
 tools/provision/credentials*.json
+tools/provision/shared-initial-password*
+tools/provision/*shared-password*.txt
 tools/provision/reports/
 tools/provision/backups/
 *service-account*.json
