@@ -52,6 +52,12 @@ jobs:
       - name: Temporary passwords + credentials file (CSPRNG, 0600, no overwrite)
         working-directory: tools/provision
         run: node test/passwords.test.js
+      - name: Archived legacy API cannot start with default secrets (regression guard)
+        working-directory: archive/legacy-express-web/backend
+        run: npm ci --no-audit --no-fund
+      - name: Archived legacy API hardening
+        working-directory: archive/legacy-express-web
+        run: node test/legacy-hardening.test.js
 
   provisioning-e2e:
     name: Provisioning + login E2E (Auth + Firestore emulators)

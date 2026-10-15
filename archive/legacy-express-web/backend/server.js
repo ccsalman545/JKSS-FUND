@@ -1,4 +1,15 @@
 // backend/server.js
+// ARCHIVED (v3.0): this legacy Express service is no longer deployed or
+// maintained. See ../README.md before running it. It refuses to start without
+// explicit configuration — there are no default secrets or default accounts.
+
+// Checked BEFORE any require() so the refusal holds even without node_modules.
+const JWT_SECRET = process.env.JWT_SECRET || '';
+if (JWT_SECRET.length < 32) {
+  console.error('FATAL: JWT_SECRET must be set to a random value of at least 32 characters. There is no default.');
+  process.exit(1);
+}
+
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -9,7 +20,6 @@ const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data.json');
 
 // Middleware
@@ -406,22 +416,28 @@ async function startup() {
   }
   store = loadStore();
   if (!store) {
+    // First run only: the admin account must come from the environment.
+    const adminUser = process.env.ADMIN_USERNAME || '';
+    const adminPass = process.env.ADMIN_PASSWORD || '';
+    if (!adminUser || adminPass.length < 12) {
+      console.error('FATAL: no data store found. For the first run set ADMIN_USERNAME and ' +
+        'ADMIN_PASSWORD (min 12 chars). No default account is created.');
+      process.exit(1);
+    }
     store = emptyStore();
-    const defaultPassword = bcrypt.hashSync('admin123', 10);
     store.users.push({
       id: store._nextId.users++,
-      username: 'admin',
-      password: defaultPassword,
+      username: adminUser,
+      password: bcrypt.hashSync(adminPass, 10),
       role: 'admin',
       full_name: 'Administrator',
       created_at: new Date().toISOString(),
     });
     saveStore(store);
-    console.log('Created default admin: username="admin", password="admin123"');
+    console.log('Created the initial admin from ADMIN_USERNAME (password not logged).');
   }
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
-    console.log(`Default admin credentials: username="admin", password="admin123"`);
     if (gcsConfigured()) console.log(`Google Cloud Storage backup enabled: bucket=${GCS_BUCKET}`);
     else console.log('GCS backup disabled (set GCS_BUCKET to enable).');
   });

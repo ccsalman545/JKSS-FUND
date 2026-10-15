@@ -60,12 +60,16 @@ JKSS-FUND/
 │   ├── roster.json         #   the 24 names (no emails!)
 │   └── test/               #   pure-Node suites + the Auth/Firestore emulator E2E suite
 ├── docs/USERNAME_LOGIN.md  # login model, runbook, migration plan, deployment checklist
-└── firebase/               # Firebase console config (deploy with firebase-tools)
-    ├── firestore.rules     # Access control
-    ├── firestore.indexes.json
-    ├── firebase.json
-    ├── .firebaserc
-    └── README.md           # Firebase project setup
+├── firebase/               # Firebase console config (deploy with firebase-tools)
+│   ├── firestore.rules     # Access control
+│   ├── firestore.indexes.json
+│   ├── firebase.json
+│   ├── .firebaserc
+│   └── README.md           # Firebase project setup
+└── archive/
+    └── legacy-express-web/ # ARCHIVED (v3.0): old Express/JWT API, Vite web UI, Dockerfile,
+                            # Procfile, and the six stray root snapshots. Not deployed; not built.
+                            # Read archive/legacy-express-web/README.md before touching anything.
 ```
 
 **Why `google-services.json`?** The native Firebase SDK reads it to initialize on Android,

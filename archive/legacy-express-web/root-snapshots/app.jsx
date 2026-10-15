@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { DollarSign, Users, TrendingUp, Plus, X, Calendar, Wallet, LogOut, Eye, EyeOff, RefreshCw, ArrowDownCircle, ArrowUpCircle } from 'lucide-react';
 
 // API Configuration - CHANGE THIS TO YOUR SERVER URL
-const API_URL = '/api';
+const API_URL = 'http://YOUR_SERVER_IP:3000/api';
 
 export default function HostelFundApp() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -278,7 +278,7 @@ function LoginScreen({ username, setUsername, password, setPassword, showPasswor
           color: 'rgba(255, 255, 255, 0.7)'
         }}>
           <div style={{ marginBottom: '8px', fontWeight: '600' }}>Default Credentials:</div>
-          <div>Admin: username: <code style={{ color: '#f093fb' }}>admin</code> / password: <code style={{ color: '#f093fb' }}>admin123</code></div>
+          <div>Admin: username: <code style={{ color: '#f093fb' }}>admin</code> / password: <code style={{ color: '#f093fb' }}><REDACTED-legacy-default></code></div>
         </div>
       </div>
     </div>

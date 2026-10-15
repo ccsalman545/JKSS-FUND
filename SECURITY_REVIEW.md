@@ -598,16 +598,15 @@ real-money movement on the current architecture.
   dependency and the `app.json` client-id placeholder are gone, and no code
   reads them. Restoring Google sign-in would mean re-adding all three (§10.3 is
   the historical checklist).
-- **Legacy web app + API** (`backend/`, `frontend/`, `Dockerfile`, `Procfile`) —
-  the pre-Firebase Express/JWT/JSON system is still in the repo but is **not
-  maintained by v3.0** and shares nothing with Firebase. If it is still hosted,
-  its seeded `admin`/`admin123` account and hardcoded-default `JWT_SECRET`
-  should be dealt with; `DEPLOY.md` lists the exact items.
-- **Repository hygiene** — six stray tracked files at the repo root
-  (`app`, `app. jsx`, `app reactnative`, `server`, `package `, `setup guide `)
-  are snapshots of the legacy frontend/backend from earlier uploads. They are not
-  referenced by any build or test. Deleting tracked files is the owner's call, so
-  v3.0 left them in place — recommended: remove them in a small follow-up.
+- **Legacy web app + API — ARCHIVED** to `archive/legacy-express-web/`. The code
+  no longer seeds `admin`/`admin123` and refuses to start without `JWT_SECRET`
+  (≥ 32 chars); `archive/legacy-express-web/test/legacy-hardening.test.js` is in CI.
+  A copy deployed from the OLD code is not changed by the repository and must be
+  checked by the owner (`DEPLOY.md` → Legacy section).
+- **Repository hygiene — resolved.** The six stray root files were archived
+  (`root-snapshots/`), except `app. jsx`, which was byte-identical to `app` and was
+  removed. The superseded snapshots had their default credentials redacted; the
+  originals are at base commit `0f362d9`.
 - **iOS / Hosting** — out of scope per the task.
 - **`removedAt` tombstones are never un-set** — re-adding a removed student
   requires a fresh identity (or console edit). Product decision.

@@ -9,6 +9,7 @@ dist/
 
 # data / secrets
 backend/data.json
+archive/**/data.json
 *.db
 *.sqlite
 .env

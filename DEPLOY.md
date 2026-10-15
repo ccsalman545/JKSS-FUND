@@ -3,9 +3,9 @@
 > **There is no server to run or host.** The product is the Firebase-backed
 > Android app in `mobile/`: Cloud Firestore for data, Firebase Authentication
 > for logins, and `firebase/firestore.rules` for access control. The pre-Firebase
-> Express + JSON system (`backend/`, `frontend/`, `Dockerfile`, `Procfile`) is
-> **superseded** and is not part of this release — see "Legacy web app + API" at
-> the bottom, including the security items to check if you still host it.
+> Express + JSON system has been **archived** under `archive/legacy-express-web/`
+> (it is superseded and is not part of this release). See "Legacy web app + API"
+> at the bottom, including the security items to check if you still host it.
 
 A "deploy" of v3.0 is three independent, reversible things. The ordered
 walkthrough with rollbacks is **`docs/USERNAME_LOGIN.md` §8**; this file is the
@@ -84,29 +84,31 @@ then move it into a password manager and delete it.
 
 ---
 
-## Legacy web app + API (superseded — not part of v3.0)
+## Legacy web app + API (archived — not part of v3.0)
 
-`backend/server.js` (Express + JWT + `backend/data.json`, optional Google Cloud
-Storage backup), `frontend/` (the Vite web UI that calls it), `Dockerfile` and
-`Procfile` belong to the pre-Firebase system. The mobile app never calls them and
-they share no data with Firebase.
+The pre-Firebase system now lives in `archive/legacy-express-web/`: the Express +
+JWT API (`backend/`), the Vite web UI (`frontend/`), `Dockerfile`, `Procfile`,
+and six stray root snapshots (`root-snapshots/`). The mobile app never calls
+them and they share no data with Firebase. Its README is
+`archive/legacy-express-web/README.md`, which also records the deployment evidence.
 
-**If that service is still deployed somewhere (Render / Railway / Fly.io), check
-these before anything else:**
+**Status of the code in the repository (done in v3.0):**
+- it no longer seeds `admin` / `admin123`; the first run needs `ADMIN_USERNAME`
+  and `ADMIN_PASSWORD` (≥ 12 characters) or it exits;
+- it refuses to start unless `JWT_SECRET` is set (≥ 32 characters); there is no
+  default secret;
+- `archive/legacy-express-web/test/legacy-hardening.test.js` enforces both.
 
-- it **seeds a default admin `admin` / `admin123`** on first start — change the
-  password or delete the account;
-- `JWT_SECRET` falls back to a hardcoded default when unset — always set it;
+**If a copy built from the OLD code is still hosted (Railway / Render / Fly.io),
+that copy is unchanged by this commit and still has the defaults.** Check it
+before anything else:
+
+- it **seeds a default admin `admin` / `admin123`** — change the password or
+  delete the account;
+- its `JWT_SECRET` may be the hardcoded default — rotate it and set a real one;
 - student passwords there are bcrypt hashes inside `backend/data.json` — treat
   that file (and any GCS copy of it) as sensitive data;
 - v3.0 does not maintain or migrate it: Firebase is the single source of truth.
 
-The old instructions, kept only for that legacy service: create a GCS bucket
-(e.g. `jkss-fund-data`), give a service account `Storage Object Admin` on it, and
-set `GCS_BUCKET` + `GCS_KEY_JSON` (or `GOOGLE_APPLICATION_CREDENTIALS`) and
-optionally `GCS_OBJECT` on the host; the app logs "Google Cloud Storage backup
-enabled" at startup. Local backup/restore there is just copying
-`backend/data.json`.
-
-> **Recommendation:** leave it off (or archive those paths in a separate change).
-> Removing tracked files is a repository decision, so v3.0 left them in place.
+Nothing in this repository has changed any hosted service. The owner must decide
+whether to stop or delete it (see the archive README).

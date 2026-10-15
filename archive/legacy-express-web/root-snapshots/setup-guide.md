@@ -43,7 +43,7 @@ Server will run on `http://localhost:3000`
 
 Default admin login:
 - Username: `admin`
-- Password: `admin123`
+- Password: `<REDACTED-legacy-default>`
 
 #### Frontend Setup (Web Browser):
 1. Open `frontend/App.jsx` in any React environment
@@ -207,7 +207,7 @@ After first login, admin should change password:
 // Add this endpoint to backend or change in database
 POST /api/auth/change-password
 {
-  "oldPassword": "admin123",
+  "oldPassword": "<REDACTED-legacy-default>",
   "newPassword": "your-new-secure-password"
 }
 ```
@@ -310,7 +310,7 @@ app.use(cors({
 - Check if backend is running
 - Verify API_URL in frontend is correct
 - Check browser console for errors
-- Try default credentials: admin/admin123
+- Try default credentials: admin/<REDACTED-legacy-default>
 
 ### APK not installing:
 - Enable "Install from Unknown Sources" in Android settings
