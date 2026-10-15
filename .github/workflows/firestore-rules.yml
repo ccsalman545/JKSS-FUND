@@ -37,6 +37,7 @@ jobs:
       - name: Run rules tests in the Firestore emulator
         working-directory: firebase
         run: |
+          echo "::notice title=rules-step::step shell started"
           # Capture everything (steps run under bash -e, so survive failure
           # with `|| true` and re-fail explicitly after reporting).
           firebase emulators:exec --only firestore "node test/rules.test.js" \
@@ -48,7 +49,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           if ! grep -qE '^[0-9]+ passed, 0 failed' rules-test-output.txt; then
-            echo "::error::Rules test suite failed or did not complete"
+            echo "::error title=rules-output::suite failed or did not complete — output follows"
+            tail -c 6000 rules-test-output.txt | sed 's/^/::error title=rules-output::/' || true
             exit 1
           fi
 
@@ -57,12 +59,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          echo "::notice title=comment-step::running"
+          BODY_FILE=$(mktemp)
           {
             echo "Firestore rules test run failed. Captured output (tail):"
             echo '```'
             tail -c 5000 firebase/rules-test-output.txt 2>/dev/null || echo "(no output captured)"
             echo '```'
-          } | gh api repos/${{ github.repository }}/commits/${{ github.sha }}/comments -f body=@-
+          } > "$BODY_FILE"
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -f body=@"$BODY_FILE" \
+            || echo "::error title=comment-step::gh api call failed (see annotations)"
 
   accounting:
     name: Accounting + api orchestration tests
