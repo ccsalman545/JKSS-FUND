@@ -14,6 +14,7 @@ const FILTERS = [
   { key: 'all', label: 'All' },
   { key: 'earning', label: 'Earnings' },
   { key: 'withdrawal', label: 'Withdrawals' },
+  { key: 'reversal', label: 'Reversed' },
 ];
 
 export default function TransactionsScreen({ route, navigation }) {
@@ -40,9 +41,13 @@ export default function TransactionsScreen({ route, navigation }) {
     [txns, filter]
   );
 
-  const earnings = txns.filter((t) => t.type === 'earning').reduce((s, t) => s + Number(t.amount || 0), 0);
-  const withdrawals = txns.filter((t) => t.type === 'withdrawal').reduce((s, t) => s + Number(t.amount || 0), 0);
-  const net = earnings - withdrawals;
+  // Paise-exact totals (reversals are debits, like withdrawals).
+  const paiseSum = (type) =>
+    txns.filter((t) => t.type === type).reduce((s, t) => s + Math.round(Number(t.amount || 0) * 100), 0);
+  const earnings = paiseSum('earning') / 100;
+  const withdrawals = paiseSum('withdrawal') / 100;
+  const reversals = paiseSum('reversal') / 100;
+  const net = earnings - withdrawals - reversals;
 
   // Group by month label, preserving order.
   const groups = useMemo(() => {
@@ -71,6 +76,7 @@ export default function TransactionsScreen({ route, navigation }) {
         {[
           { value: '+' + formatINR(earnings), label: 'Earned', color: theme.success },
           { value: '-' + formatINR(withdrawals), label: 'Withdrawn', color: theme.danger },
+          ...(reversals > 0 ? [{ value: '-' + formatINR(reversals), label: 'Reversed', color: theme.textMuted }] : []),
           { value: formatINR(net), label: 'Net', color: theme.text },
         ].map((s, i) => (
           <View key={s.label} style={[styles.summaryCol, i > 0 && { borderLeftWidth: 1, borderColor: theme.border }]}>

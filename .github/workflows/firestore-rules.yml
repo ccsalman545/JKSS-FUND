@@ -1,0 +1,54 @@
+# Runs the Firestore security-rules test suite against the real Firestore
+# emulator (production rules engine) on every push/PR that touches firebase/.
+# GitHub-hosted runners ship with Java 17, so the emulator runs here.
+name: Firestore rules
+
+on:
+  push:
+    branches: [ main, "arena/**" ]
+    paths:
+      - "firebase/**"
+      - ".github/workflows/firestore-rules.yml"
+  pull_request:
+    paths:
+      - "firebase/**"
+      - ".github/workflows/firestore-rules.yml"
+
+jobs:
+  rules:
+    name: Rules unit tests (emulator)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: firebase/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Install firebase-tools
+        run: npm install -g firebase-tools
+      - name: Install test dependencies
+        working-directory: firebase
+        run: npm ci
+      - name: Run rules tests in the Firestore emulator
+        working-directory: firebase
+        run: firebase emulators:exec --only firestore "node test/rules.test.js"
+
+  accounting:
+    name: Accounting + api orchestration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run accounting core tests
+        working-directory: mobile
+        run: node test/accounting.test.js
+      - name: Run api orchestration tests (mock Firestore)
+        working-directory: mobile
+        run: node test/api.mock.test.js

@@ -17,7 +17,7 @@ const QUICK_AMOUNTS = [100, 200, 500];
 export default function StudentDashboard({ navigation }) {
   const { user } = useAuth();
   const { theme } = useTheme();
-  const [info, setInfo] = useState({ balance: 0, committeeBalance: 0, full_name: user?.full_name || '' });
+  const [info, setInfo] = useState({ balance: 0, balancePaise: 0, committeeBalance: 0, full_name: user?.full_name || '' });
   const [txns, setTxns] = useState([]);
   const [hidden, setHidden] = useState(false);
   const [showWithdraw, setShowWithdraw] = useState(false);
@@ -40,13 +40,19 @@ export default function StudentDashboard({ navigation }) {
 
   const balanceText = hidden ? '₹ ••••••' : formatINR(info.balance);
 
+  // Whole-paise max, derived from integer paise so float drift can't
+  // overstate the balance.
+  const maxRupees = Math.floor(Number(info.balancePaise ?? 0)) / 100;
+
   const withdraw = async () => {
     setWError('');
     setWLoading(true);
     try {
       const amt = parseFloat(amount);
       if (!amt || amt <= 0) throw new Error('Enter a valid amount');
-      if (amt > Number(info.balance || 0)) throw new Error('Amount is more than your balance');
+      if (Math.round(amt * 100) > Number(info.balancePaise ?? 0)) {
+        throw new Error('Amount is more than your balance');
+      }
       await api.withdraw(amt, desc.trim() || 'Withdrawal');
       setShowWithdraw(false);
       setAmount('');
@@ -150,8 +156,8 @@ export default function StudentDashboard({ navigation }) {
           ))}
           <Chip
             label="Max"
-            active={amount === String(info.balance)}
-            onPress={() => setAmount(String(Math.floor(Number(info.balance || 0) * 100) / 100))}
+            active={amount === String(maxRupees)}
+            onPress={() => setAmount(String(maxRupees))}
           />
         </View>
 

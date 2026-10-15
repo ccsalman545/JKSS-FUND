@@ -1,65 +1,423 @@
 rules_version = '2';
 
+// JKSS-FUND v3.1 — least-privilege Firestore rules.
+//
+// Design
+// ------
+// - Money is stored in INTEGER PAISE (`balancePaise` / `amountPaise`). The
+//   rupee floats (`balance` / `amount`) are display mirrors only.
+// - /users/{email} doc IDs are normalized (lowercase) email addresses.
+// - A student's ledger lives at /users/{email}/transactions — students can
+//   only ever list/get their own; admins can list/read everything.
+// - The legacy top-level /transactions collection is read-only for admins
+//   (historical audit) and hard-denied for writes.
+// - Balance changes are only legal inside atomic batches:
+//     * withdrawal  : users/{me} update  + users/{me}/transactions/{id} set
+//     * job credit  : jobs/{id} set      + users update + sub-txn set per
+//                     allocation + meta/committee update
+//     * job reversal: jobs/{id} delete   + users update + sub-txn set per
+//                     ORIGINAL allocation + meta/committee update
+//   The batch composition is validated here; `getAfter()` validates the
+//   final committee state.
+// - Students may never create or modify the `admin` role. Admins may
+//   provision other admins but not edit balances (no manual balance edits
+//   by anyone — the rules have no such path).
+// - Student removal is a tombstone (`removedAt`), never a hard delete, so
+//   historical job reversals always have a document to debit.
+
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // True if the signed-in user's profile (keyed by their email) exists and is an admin.
-    function isAdmin() {
-      return request.auth != null
-        && exists(/databases/$(database)/documents/users/$(request.auth.token.email))
-        && get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'admin';
+    /* ----------------------------- helpers ----------------------------- */
+
+    function signedIn() {
+      return request.auth != null;
     }
 
-    function ownerEmail() {
+    function selfEmail() {
       return request.auth.token.email;
     }
 
-    // Users are stored with document ID = lowercased email.
+    // Normalized email doc id: non-empty, lowercase, no spaces, has '@'.
+    function isEmailId(id) {
+      return id is string
+        && id != ''
+        && id == id.lower()
+        && id.indexOf(' ') == -1
+        && id.indexOf('@') > 0;
+    }
+
+    // Parameterized (not implicitly scoped to a wildcard): called with the
+    // {email} doc id from the /users rules.
+    function isSelf(email) {
+      return signedIn() && selfEmail() == email;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && isEmailId(selfEmail())
+        && exists(/databases/$(database)/documents/users/$(selfEmail()))
+        && get(/databases/$(database)/documents/users/$(selfEmail())).data.role == 'admin';
+    }
+
+    // Integer paise of a user/committee doc (legacy docs carry rupee floats).
+    function paiseOf(d) {
+      return d.balancePaise is int ? d.balancePaise : round(d.balance * 100);
+    }
+
+    // Keys of writes in the current request that are sub-ledger txn sets for
+    // a given student.
+    function theirTxnWrites(stu) {
+      return request.writes.keys().filter((k) =>
+        k.split('/')[0] == 'users'
+        && k.split('/').size() == 4
+        && k.split('/')[1] == stu
+        && k.split('/')[2] == 'transactions');
+    }
+
+    // Keys of plain /users/{x} update-or-set writes in the current request.
+    function userWrites() {
+      return request.writes.keys().filter((k) =>
+        k.split('/')[0] == 'users' && k.split('/').size() == 2);
+    }
+
+    // Job keys in the current request.
+    function jobWrites() {
+      return request.writes.keys().filter((k) =>
+        k.split('/')[0] == 'jobs' && k.split('/').size() == 2);
+    }
+
+    /* ------------------------------ /users ----------------------------- */
+
     match /users/{email} {
-      allow read: if request.auth != null;
 
-      allow create: if request.auth != null
-        && (ownerEmail() == email || isAdmin());
+      /* ---- self: profile fields only, or an atomic withdrawal pair ---- */
 
-      allow update: if request.auth != null && (
-        isAdmin()
-        || (
-          ownerEmail() == email
-          && request.resource.data.balance <= resource.data.balance   // students may only lower their balance (withdrawal)
-          && request.resource.data.role == resource.data.role         // cannot change their own role
-          && request.resource.data.email == resource.data.email       // cannot change their own email
-        )
-      );
+      function selfProfileOk() {
+        return request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['full_name', 'avatar', 'lastActiveAt']);
+      }
 
-      allow delete: if isAdmin();
+      function withdrawalAffectedOk() {
+        return request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['full_name', 'avatar', 'lastActiveAt', 'balance', 'balancePaise']);
+      }
+
+      // The batch must contain exactly one companion withdrawal txn for this
+      // student, and the final (post-write) paise balance must be non-negative.
+      function withdrawalBatchOk() {
+        let newPaise = request.resource.data.balancePaise;
+        if (newPaise is not int) return false;
+        if (newPaise < 0) return false;
+        let delta = paiseOf(resource.data) - newPaise;
+        if (delta <= 0) return false;
+        if (withdrawalAffectedOk() is not true) return false;
+        let txnKeys = theirTxnWrites(email);
+        if (txnKeys.size() != 1) return false;
+        let tw = request.writes[txnKeys[0]];
+        return tw.method == 'set'
+          && tw.resource.data.type == 'withdrawal'
+          && tw.resource.data.studentId == email
+          && tw.resource.data.amountPaise is int
+          && tw.resource.data.amountPaise > 0
+          && tw.resource.data.amountPaise == delta;
+      }
+
+      /* ---- admin: roster/profile maintenance (no balances, no roles) ---- */
+
+      function adminMaintenanceOk() {
+        return request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['full_name', 'avatar', 'lastActiveAt', 'removedAt']);
+      }
+
+      /* ---- admin: job credit (atomic job batch) ---- */
+
+      // Credit must match this student's entry in the new job's allocations,
+      // and the same batch must carry the matching earning txn.
+      function jobCreditOk() {
+        let newPaise = request.resource.data.balancePaise;
+        if (newPaise is not int) return false;
+        let delta = newPaise - paiseOf(resource.data);
+        if (delta <= 0) return false;
+        let jobKeys = jobWrites();
+        if (jobKeys.size() != 1) return false;
+        let job = request.writes[jobKeys[0]];
+        if (job.method != 'set') return false;
+        let allocs = job.resource.data.allocations;
+        if (allocs is not list) return false;
+        let mine = allocs.filter((a) => a.email == email);
+        if (mine.size() != 1) return false;
+        if (mine[0].amountPaise != delta) return false;
+        let txnKeys = theirTxnWrites(email);
+        if (txnKeys.size() != 1) return false;
+        let tw = request.writes[txnKeys[0]];
+        return tw.method == 'set'
+          && tw.resource.data.type == 'earning'
+          && tw.resource.data.studentId == email
+          && tw.resource.data.jobId == jobKeys[0].split('/')[1]
+          && tw.resource.data.amountPaise == delta;
+      }
+
+      /* ---- admin: job reversal (atomic job-delete batch) ---- */
+
+      // Debit is legal only inside a job-deletion batch; the companion
+      // reversal txn must be present for this student. The ORIGINAL
+      // allocation amounts are validated by the /jobs delete rule
+      // (it can see the job's pre-deletion data). Removed students may end
+      // negative (the fund's standing liability); active students may not.
+      function jobReversalOk() {
+        let newPaise = request.resource.data.balancePaise;
+        if (newPaise is not int) return false;
+        let delta = paiseOf(resource.data) - newPaise;
+        if (delta <= 0) return false;
+        if (newPaise < 0 && resource.data.removedAt == null) return false;
+        let jobKeys = jobWrites();
+        if (jobKeys.size() != 1) return false;
+        if (request.writes[jobKeys[0]].method != 'delete') return false;
+        let txnKeys = theirTxnWrites(email);
+        if (txnKeys.size() != 1) return false;
+        let tw = request.writes[txnKeys[0]];
+        return tw.method == 'set'
+          && tw.resource.data.type == 'reversal'
+          && tw.resource.data.studentId == email
+          && tw.resource.data.jobId == jobKeys[0].split('/')[1]
+          && tw.resource.data.amountPaise == delta;
+      }
+
+      allow get: if isEmailId(email) && (isSelf(email) || isAdmin());
+
+      // Only admins may list students. (The list rule must not depend on
+      // the {email} wildcard — it is unbound during a list operation;
+      // per-document visibility is still enforced by the get rule above.)
+      allow list: if isAdmin();
+
+      /* First sign-in self-provisioning: always student, zero balances. */
+      allow create: if isSelf(email)
+        && isEmailId(email)
+        && request.resource.data.email == email
+        && request.resource.data.role == 'student'
+        && request.resource.data.balancePaise == 0
+        && request.resource.data.balance == 0;
+
+      /* Admins provision students and may grant the admin role on create.
+         (Granting/modifying an existing user's role is impossible — see
+         update rules below.) */
+      allow create: if isAdmin()
+        && isEmailId(email)
+        && request.resource.data.email == email
+        && (request.resource.data.role == 'student' || request.resource.data.role == 'admin')
+        && request.resource.data.balancePaise == 0
+        && request.resource.data.balance == 0;
+
+      allow update: if isSelf(email)
+        && isEmailId(email)
+        && (selfProfileOk() || withdrawalBatchOk());
+
+      allow update: if isAdmin() && isEmailId(email) && adminMaintenanceOk();
+
+      allow update: if isAdmin() && isEmailId(email) && jobCreditOk();
+
+      allow update: if isAdmin() && isEmailId(email) && jobReversalOk();
+
+      // Hard delete is denied for everyone: removal is a tombstone update
+      // (`removedAt`) so historical allocations remain reversible.
+      allow delete: if false;
     }
 
-    // Jobs are admin-managed. The 10/90 split is computed client-side in an
-    // atomic batch (admin write), which these rules permit.
+    /* ----------------- /users/{email}/transactions ---------------------- */
+
+    match /users/{email}/transactions/{txnId} {
+
+      allow get: if isEmailId(email) && (isSelf(email) || isAdmin());
+      allow list: if isEmailId(email) && (isSelf(email) || isAdmin());
+
+      // A student's withdrawal txn must be the companion write of their own
+      // balance reduction (enforced exactly in /users; shape here).
+      function ownWithdrawalTxnOk() {
+        let t = request.resource.data;
+        if (t.type != 'withdrawal') return false;
+        if (t.studentId != email) return false;
+        if (t.amountPaise is not int || t.amountPaise <= 0) return false;
+        if (t.amount is not number || t.amount <= 0) return false;
+        let userKeys = userWrites().filter((k) => k == 'users/' + email);
+        return userKeys.size() == 1
+          && request.writes[userKeys[0]].method == 'update';
+      }
+
+      function earningTxnOk() {
+        let t = request.resource.data;
+        if (t.type != 'earning') return false;
+        if (t.studentId != email) return false;
+        if (t.jobId is not string || t.jobId == '') return false;
+        if (t.amountPaise is not int || t.amountPaise <= 0) return false;
+        let jobKeys = jobWrites().filter((k) => k == 'jobs/' + t.jobId);
+        return jobKeys.size() == 1
+          && request.writes[jobKeys[0]].method == 'set';
+      }
+
+      function reversalTxnOk() {
+        let t = request.resource.data;
+        if (t.type != 'reversal') return false;
+        if (t.studentId != email) return false;
+        if (t.jobId is not string || t.jobId == '') return false;
+        if (t.amountPaise is not int || t.amountPaise <= 0) return false;
+        let jobKeys = jobWrites().filter((k) => k == 'jobs/' + t.jobId);
+        return jobKeys.size() == 1
+          && request.writes[jobKeys[0]].method == 'delete';
+      }
+
+      allow create: if isEmailId(email)
+        && (
+          (isSelf(email) && ownWithdrawalTxnOk())
+          || (isAdmin() && (earningTxnOk() || reversalTxnOk()))
+        );
+
+      // Ledger entries are immutable.
+      allow update: if false;
+
+      // Entries are never deleted (audit trail). Student removal is a
+      // tombstone on the user doc, not a ledger wipe.
+      allow delete: if false;
+    }
+
+    /* ------------------------------- /jobs ------------------------------ */
+
     match /jobs/{jobId} {
-      allow read: if request.auth != null;
-      allow write: if isAdmin();
+
+      allow get: if isAdmin();
+      allow list: if isAdmin();
+
+      // Structural validity of a new job, including the exact
+      // largest-remainder allocation formula (this makes the allocation
+      // sum provably equal to studentSharePaise without needing a sum()).
+      function jobShapeOk(d) {
+        if (d.name is not string || d.name == '') return false;
+        if (d.name.size() > 120) return false;
+        if (d.date is not string || d.date == '') return false;
+        if (d.amountPaise is not int || d.amountPaise <= 0) return false;
+        if (d.studentCount is not int || d.studentCount <= 0) return false;
+        // 10% committee (rounded down to whole paise), remainder to students.
+        // (Positive integer division truncates = floors.)
+        if (d.committeeSharePaise is not int) return false;
+        if (d.committeeSharePaise != d.amountPaise / 10) return false;
+        if (d.studentSharePaise is not int) return false;
+        if (d.studentSharePaise != d.amountPaise - d.committeeSharePaise) return false;
+        if (d.studentSharePaise <= 0) return false;
+        if (d.allocations is not list) return false;
+        if (d.allocations.size() != d.studentCount) return false;
+        if (d.allocations.filter((a) => a.email is not string).size() != 0) return false;
+        if (d.allocations.filter((a) => a.amountPaise is not int).size() != 0) return false;
+        if (d.allocations.filter((a) => a.index is not int).size() != 0) return false;
+        // Largest-remainder formula: base = pool / n (integer division);
+        // exactly r = pool - base*n allocations may be base+1, rest base.
+        let base = d.studentSharePaise / d.studentCount;
+        let r = d.studentSharePaise - base * d.studentCount;
+        let big = d.allocations.filter((a) => a.amountPaise == base + 1).size();
+        let small = d.allocations.filter((a) => a.amountPaise == base).size();
+        return big == r && small == d.studentCount - r;
+      }
+
+      // The credit batch must be complete: one users credit + one earning
+      // txn per NON-ZERO allocation (zero-paise allocations carry no write),
+      // plus the committee credit (validated below via getAfter on
+      // /meta/committee).
+      function jobBatchComplete(d) {
+        let nonZero = d.allocations.filter((a) => a.amountPaise > 0).size();
+        let creditKeys = userWrites();
+        if (creditKeys.size() != nonZero) return false;
+        let txnKeys = request.writes.keys().filter((k) =>
+          k.split('/')[0] == 'users' && k.split('/').size() == 4
+          && k.split('/')[2] == 'transactions');
+        if (txnKeys.size() != nonZero) return false;
+        if (request.writes['meta/committee'] == null) return false;
+        let c = request.writes['meta/committee'];
+        if (c.method != 'update') return false;
+        // Final committee state (atomic write) must reflect the credit.
+        let cOld = get('/databases/$(database)/documents/meta/committee').data;
+        let cNew = getAfter('/databases/$(database)/documents/meta/committee').data;
+        if (cNew.balancePaise is not int) return false;
+        if (cNew.balancePaise - paiseOf(cOld) != d.committeeSharePaise) return false;
+        if (cNew.balancePaise < 0) return false;
+        return true;
+      }
+
+      allow create: if isAdmin()
+        && jobShapeOk(request.resource.data)
+        && jobBatchComplete(request.resource.data);
+
+      // Jobs are immutable except for an explicit status flag.
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+        && request.resource.data.status in ['active', 'archived'];
+
+      // Deletion is only legal as a complete reversal batch that debits the
+      // ORIGINAL allocations (not the current roster) and credits the
+      // committee back. Legacy jobs without allocation history are refused.
+      function allocReversed(a) {
+        let uKeys = userWrites().filter((k) => k == 'users/' + a.email);
+        if (uKeys.size() != 1) return false;
+        let tKeys = request.writes.keys().filter((k) =>
+          k == 'users/' + a.email + '/transactions/rev_' + jobId + '_' + a.index);
+        if (tKeys.size() != 1) return false;
+        return request.writes[tKeys[0]].resource.data.amountPaise == a.amountPaise
+          && request.writes[tKeys[0]].resource.data.type == 'reversal';
+      }
+
+      function reversalBatchOk() {
+        let d = resource.data;
+        if (d.allocations is not list || d.allocations.size() == 0) return false;
+        if (d.committeeSharePaise is not int) return false;
+        // Legacy job without paise accounting: reconcile manually.
+        if (d.amountPaise is not int) return false;
+        let missing = d.allocations.map((a) => allocReversed(a)).filter((ok) => !ok).size();
+        if (missing != 0) return false;
+        if (request.writes['meta/committee'] == null) return false;
+        if (request.writes['meta/committee'].method != 'update') return false;
+        let cOld = get('/databases/$(database)/documents/meta/committee').data;
+        let cNew = getAfter('/databases/$(database)/documents/meta/committee').data;
+        if (cNew.balancePaise is not int) return false;
+        if (paiseOf(cOld) - cNew.balancePaise != d.committeeSharePaise) return false;
+        if (cNew.balancePaise < 0) return false;
+        return true;
+      }
+
+      allow delete: if isAdmin() && reversalBatchOk();
     }
 
-    // Transactions: admin can read/write all; a student may only create their
-    // own withdrawal record.
-    match /transactions/{txId} {
-      allow read: if request.auth != null
-        && (resource.data.studentId == ownerEmail() || isAdmin());
+    /* --------------------------- /meta/committee ------------------------ */
 
-      allow create: if request.auth != null && (
-        isAdmin()
-        || (ownerEmail() == request.resource.data.studentId
-            && request.resource.data.type == 'withdrawal')
-      );
+    match /meta/committee {
+      // The committee balance is shown to all signed-in users (public fund).
+      allow get: if signedIn();
+      allow list: if false;
 
-      allow update, delete: if isAdmin();
+      // Bootstrap at zero only (idempotent app init).
+      allow create: if signedIn()
+        && request.resource.data.balancePaise == 0
+        && request.resource.data.balance == 0;
+
+      // Real changes only inside a job credit/reversal batch — and only by
+      // an admin. (The app bootstraps the doc at zero on first use via the
+      // create rule above; there is no legitimate path that writes an
+      // existing committee balance outside a job batch.)
+      allow update: if isAdmin() && jobWrites().size() == 1;
+
+      allow delete: if false;
     }
 
-    // App metadata (e.g. committee fund balance).
-    match /meta/{doc} {
-      allow read: if request.auth != null;
-      allow write: if isAdmin();
+    /* -------------------- legacy /transactions (audit) ------------------ */
+
+    // Pre-v3.1 top-level transaction collection. Reads are admin-only
+    // (audit); writes are hard-denied so the historical ledger is immutable.
+    match /transactions/{txnId} {
+      allow get: if isAdmin();
+      allow list: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // Explicit deny for anything not covered above (no catch-alls).
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

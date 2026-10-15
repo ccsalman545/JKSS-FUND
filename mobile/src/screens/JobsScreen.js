@@ -1,7 +1,7 @@
 // src/screens/JobsScreen.js
 // Admin: jobs — list with 10/90 split breakdown, add (sheet with live split preview).
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, ScrollView, RefreshControl, StyleSheet } from 'react-native';
+import { View, Text, ScrollView, RefreshControl, StyleSheet, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
@@ -55,15 +55,27 @@ export default function JobsScreen({ navigation }) {
 
   const confirmDelete = async () => {
     if (!toDelete) return;
-    await api.deleteJob(toDelete.id);
-    setToDelete(null);
-    await load();
+    try {
+      // Reverses the job's ORIGINAL stored allocations (never the current
+      // roster). Legacy jobs without allocation history are refused here.
+      await api.deleteJob(toDelete.id);
+      setToDelete(null);
+      await load();
+    } catch (e) {
+      Alert.alert('Could not delete job', e.message?.replace('Firebase: ', '') || 'Please try again.');
+    }
   };
 
-  const amt = parseFloat(amount) || 0;
-  const previewCommittee = +(amt * (COMMITTEE_SHARE_PCT / 100)).toFixed(2);
-  const previewStudent = +(amt * (STUDENT_SHARE_PCT / 100)).toFixed(2);
-  const previewPerStudent = studentCount > 0 ? +(previewStudent / studentCount).toFixed(2) : 0;
+  // Paise-exact preview (mirrors the accounting in api.addJob).
+  const amtPaise = Math.round((parseFloat(amount) || 0) * 100);
+  const previewCommittee = amtPaise > 0 ? Math.floor((amtPaise * COMMITTEE_SHARE_PCT) / 100) / 100 : 0;
+  const previewStudent = amtPaise > 0 ? (amtPaise - Math.floor((amtPaise * COMMITTEE_SHARE_PCT) / 100)) / 100 : 0;
+  const previewPerStudentBase = amtPaise > 0 && studentCount > 0
+    ? Math.floor((amtPaise - Math.floor((amtPaise * COMMITTEE_SHARE_PCT) / 100)) / studentCount) / 100
+    : 0;
+  const previewRemainder = amtPaise > 0 && studentCount > 0
+    ? (amtPaise - Math.floor((amtPaise * COMMITTEE_SHARE_PCT) / 100)) % studentCount
+    : 0;
 
   const totalCollected = jobs.reduce((s, j) => s + Number(j.amount || 0), 0);
   const monthCollected = jobs
@@ -195,10 +207,15 @@ export default function JobsScreen({ navigation }) {
               <View style={{ textAlign: 'right' }}>
                 <Text style={[styles.previewBig, { color: theme.onPrimaryContainer }]}>{formatINR(previewStudent)}</Text>
                 <Text style={[styles.previewSmall, { color: theme.textMuted }]}>
-                  Students ({STUDENT_SHARE_PCT}%) · {studentCount > 0 ? formatINR(previewPerStudent) + ' each' : 'add students first'}
+                  Students ({STUDENT_SHARE_PCT}%) · {studentCount > 0 ? formatINR(previewPerStudentBase) + ' each' : 'add students first'}
                 </Text>
               </View>
             </View>
+            {previewRemainder > 0 ? (
+              <Text style={[styles.previewNote, { color: theme.onPrimaryContainer }]}>
+                Paise-exact: first {previewRemainder} student{previewRemainder > 1 ? 's' : ''} get +₹0.01 so the total matches exactly.
+              </Text>
+            ) : null}
           </Card>
         ) : null}
 
@@ -251,4 +268,5 @@ const styles = StyleSheet.create({
   previewRow: { flexDirection: 'row', alignItems: 'flex-end' },
   previewBig: { fontSize: 17, fontWeight: '800', letterSpacing: -0.3 },
   previewSmall: { fontSize: 11, fontWeight: '600', marginTop: 2 },
+  previewNote: { fontSize: 11, fontWeight: '600', marginTop: 10, lineHeight: 16 },
 });

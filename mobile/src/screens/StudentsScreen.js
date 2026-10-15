@@ -59,7 +59,9 @@ export default function StudentsScreen({ navigation }) {
 
   const confirmDelete = async () => {
     if (!toDelete) return;
-    await api.deleteStudent(toDelete.id);
+    // Tombstone removal: preserves the student's balance + ledger so future
+    // job reversals and audits stay intact. They stop receiving new splits.
+    await api.removeStudent(toDelete.id);
     setToDelete(null);
     await load();
   };
@@ -132,8 +134,8 @@ export default function StudentsScreen({ navigation }) {
         />
         <Input
           icon="mail-outline"
-          label="Username / Google email"
-          placeholder="e.g. salmaan@jkss.in or roll no"
+          label="Google email"
+          placeholder="e.g. salmaan@jkss.in"
           autoCapitalize="none"
           value={username}
           onChangeText={(t) => { setUser(t); setErr(''); }}
@@ -141,7 +143,7 @@ export default function StudentsScreen({ navigation }) {
           style={{ marginBottom: 8 }}
         />
         <Text style={[styles.hint, { color: theme.textFaint }]}>
-          The student signs in with Google using this email and is added to every future 90% split.
+          The student signs in with Google using this email. They are added to every future 90% split until removed.
         </Text>
         <Button
           label={saving ? 'Saving…' : 'Save student'}
@@ -157,8 +159,8 @@ export default function StudentsScreen({ navigation }) {
         visible={!!toDelete}
         onClose={() => setToDelete(null)}
         onConfirm={confirmDelete}
-        title="Remove student?"
-        message={`This deletes ${toDelete?.full_name || 'the student'}'s balance and full transaction history. This cannot be undone.`}
+        title="Remove from roster?"
+        message={`${toDelete?.full_name || 'This student'} will stop receiving job splits. Their balance and full transaction history are preserved for audit and for reversing past jobs.`}
         confirmLabel="Remove"
       />
     </Screen>
