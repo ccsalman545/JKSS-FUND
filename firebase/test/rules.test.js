@@ -310,15 +310,18 @@ test('student: CANNOT read any job document', async () => {
 /* =====================================================================
    4. Withdrawals — atomic pair, non-negative, exact delta
    ===================================================================== */
-/* v3.5 protocol: the withdrawal user write bumps txnSeq by 1 and the
-   companion txn MUST live at the canonical id w_{email}_{newSeq}. */
+/* v3.5 protocol: the withdrawal user write bumps txnSeq by 1, names the
+   companion txn (withdrawalTxnId), and the txn doc carries the seq —
+   the bidirectional lock (the engine has no int->string). */
 function withdrawalBatch(db, email, finalPaise, seq, amountPaise, { txnId, extraUser = {} } = {}) {
+  const id = txnId || ('w_' + email + '_' + seq);
   const b = writeBatch(db);
   b.update(doc(db, 'users/' + email), Object.assign(
-    { balancePaise: finalPaise, balance: finalPaise / 100, txnSeq: seq }, extraUser));
-  b.set(doc(db, 'users/' + email + '/transactions/' + (txnId || ('w_' + email + '_' + seq))), {
+    { balancePaise: finalPaise, balance: finalPaise / 100, txnSeq: seq, withdrawalTxnId: id },
+    extraUser));
+  b.set(doc(db, 'users/' + email + '/transactions/' + id), {
     type: 'withdrawal', studentId: email, amountPaise, amount: amountPaise / 100,
-    description: 'Books',
+    seq, description: 'Books',
   });
   return b;
 }
@@ -330,13 +333,17 @@ test('student: withdrawal WITH matching companion txn (atomic) is allowed', asyn
 });
 test('student: withdrawal WITHOUT companion txn is denied', async () => {
   const db = authed(A).firestore();
+  // The user write names a companion txn, but no txn write is in the
+  // batch: getAfter(tid) finds nothing -> denied.
   await assertFails(updateDoc(doc(db, 'users/' + A),
-    { balancePaise: 3000, balance: 30, txnSeq: 1 }));
+    { balancePaise: 3000, balance: 30, txnSeq: 1, withdrawalTxnId: 'w_' + A + '_1' }));
 });
 test('student: companion txn WITHOUT balance reduction is denied', async () => {
   const db = authed(A).firestore();
+  // No user write in this request: the post-batch user doc has no
+  // withdrawalTxnId and no seq bump, so the bidirectional lock fails.
   await assertFails(setDoc(doc(db, 'users/' + A + '/transactions/w_' + A + '_1'), {
-    type: 'withdrawal', studentId: A, amountPaise: 2000, amount: 20,
+    type: 'withdrawal', studentId: A, amountPaise: 2000, amount: 20, seq: 1,
   }));
 });
 test('student: withdrawal driving balance negative is denied', async () => {
@@ -345,12 +352,14 @@ test('student: withdrawal driving balance negative is denied', async () => {
 });
 test('student: withdrawal txn amount must EXACTLY equal the delta', async () => {
   const db = authed(A).firestore();
-  // User drops by 1500 (→3500) but the canonical txn claims 2000:
+  // User drops by 1500 (→3500) but the companion txn claims 2000:
   // the txn rule checks final == pre - amount and denies the batch.
   const b = writeBatch(db);
-  b.update(doc(db, 'users/' + A), { balancePaise: 3500, balance: 35, txnSeq: 1 });
+  b.update(doc(db, 'users/' + A), {
+    balancePaise: 3500, balance: 35, txnSeq: 1, withdrawalTxnId: 'w_' + A + '_1',
+  });
   b.set(doc(db, 'users/' + A + '/transactions/w_' + A + '_1'), {
-    type: 'withdrawal', studentId: A, amountPaise: 2000, amount: 20, // mismatch
+    type: 'withdrawal', studentId: A, amountPaise: 2000, amount: 20, seq: 1, // mismatch
   });
   await assertFails(b.commit());
 });

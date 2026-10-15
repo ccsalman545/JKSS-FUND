@@ -502,6 +502,11 @@ export const api = {
 
       const newSeq = oldSeq + 1;
       const newPaise = balancePaise - amountPaise;
+      // Canonical ID (client-deterministic; the rules verify the pair
+      // bidirectionally — the engine has no int->string, so the id is
+      // carried as a string field and the seq as an int field):
+      //   user write -> withdrawalTxnId, txn doc -> seq.
+      const txnId = `w_${email}_${newSeq}`;
       // Explicit FINAL values (never a server increment): the rules compute
       // the delta against the live document, which makes a stale/duplicate
       // batch impossible (non-adjacent seq and/or taken txn ID).
@@ -509,13 +514,14 @@ export const api = {
         balancePaise: newPaise,
         balance: paiseToRupees(newPaise),
         txnSeq: newSeq,
+        withdrawalTxnId: txnId,
       });
-      // Canonical ID (required by the rules): w_{email}_{newSeq}.
-      t.set(txnsOf(email).doc(`w_${email}_${newSeq}`), {
+      t.set(txnsOf(email).doc(txnId), {
         type: 'withdrawal',
         studentId: email,
         amountPaise,
         amount: paiseToRupees(amountPaise),
+        seq: newSeq,
         description: description || 'Withdrawal',
         idempotencyKey: key,
         createdAt: now(),

@@ -41,21 +41,29 @@ rules_version = '2';
 // keeps it out of the student dashboard.
 //
 // CANONICAL IDS (replay/ledger integrity):
-//  * earning txn:    earn_{jobId}_{email}
-//  * reversal txn:   rev_{jobId}_{email}
-//  * withdrawal txn: w_{email}_{txnSeq}   where txnSeq is the per-user
-//    monotonically increasing counter on the user doc (0 for legacy docs,
-//    bumped by exactly 1 in the withdrawal user write).
+//  * earning txn:    earn_{jobId}_{email}        (rule-reconstructed —
+//  * reversal txn:   rev_{jobId}_{email}         string-only, no engine
+//                                                  toString() needed)
+//  * withdrawal txn: w_{email}_{txnSeq}          (CLIENT-supplied id; the
+//    where txnSeq is the per-user monotonically increasing counter on the
+//    user doc (0 for legacy docs, bumped by exactly 1 in the withdrawal
+//    user write). This engine has NO int->string conversion, so the pair
+//    is a BIDIRECTIONAL lock instead: the user write carries
+//    withdrawalTxnId (the txn's id) and the txn carries seq (the int);
+//    each side verifies the other — no id can be detached from its
+//    balance write, and no balance write can skip its ledger entry.)
 //
 // BATCH PROTOCOL (what the app sends, what the rules prove):
 //   withdrawal (self, 2 writes):
-//     users/{me} update  {balancePaise, balance, txnSeq: oldSeq+1}
-//     users/{me}/transactions/w_{me}_{oldSeq+1} set (withdrawal)
-//     - user rule: final >= 0, delta > 0, seq bumped by exactly 1, and the
-//       canonical txn is NEW in the batch (get: absent / getAfter: present)
-//       with amount == the live delta (checked on the txn side).
+//     users/{me} update  {balancePaise, balance, txnSeq: oldSeq+1,
+//                         withdrawalTxnId: 'w_{me}_{oldSeq+1}'}
+//     users/{me}/transactions/w_{me}_{oldSeq+1} set (withdrawal, seq: N)
+//     - user rule: final >= 0, delta > 0, seq bumped by exactly 1, and
+//       the referenced txn is NEW in the batch (exists: absent /
+//       getAfter: present) with type 'withdrawal' and seq == newSeq.
 //     - txn rule: final user balance (getAfter) == pre-balance - amount,
-//       final >= 0, and the ID is canonical for the post-batch seq.
+//       final >= 0, post-batch user doc references this txn id, and
+//       t.seq == post-batch user seq (bidirectional companion lock).
 //   job credit (admin):
 //     jobs/{id} set (shape-validated, allocations map {email: paise})
 //     users/{e} update  {balancePaise, balance, creditJobId: id}
@@ -143,22 +151,22 @@ service cloud.firestore {
                .hasOnly(['full_name', 'avatar', 'lastActiveAt']);
       }
 
-      // Self withdrawal: final >= 0, positive delta, ONLY the balance fields
-      // plus the seq bump, seq advanced by exactly 1, and the canonical
-      // withdrawal txn w_{email}_{newSeq} must be NEW in this batch.
-      // (Checked AFTER selfProfileOk in the allow rule so profile updates
+      // Self withdrawal: final >= 0, positive delta, ONLY the balance
+      // fields + seq bump + the companion txn reference, seq advanced by
+      // exactly 1, and the referenced txn must be NEW in this batch with
+      // seq == newSeq. (Checked AFTER selfProfileOk so profile updates
       // never touch these reads.)
+      // The pair is a BIDIRECTIONAL lock (no int->string exists in this
+      // engine, so the txn ID is client-supplied and verified from both
+      // sides): the user write names the txn (withdrawalTxnId) and the
+      // txn carries the seq (t.seq); each side checks the other.
       function withdrawalOk() {
         let newPaise = request.resource.data.balancePaise;
         let newSeq = request.resource.data.txnSeq;
         let oldSeq = resource.data.txnSeq;
         let delta = paiseOf(resource.data) - newPaise;
-        let tid = newSeq is int ? 'w_' + email + '_' + toString(newSeq) : null;
+        let tid = request.resource.data.withdrawalTxnId is string ? request.resource.data.withdrawalTxnId : null;
         let tAfter = tid == null ? null : getAfter(/databases/$(database)/documents/users/$(email)/transactions/$(tid));
-        // Post-batch presence is folded into the data read: for a missing
-        // canonical txn, tAfter.data errors (denies) — exactly the outcome
-        // the old .exists gate produced. Pre-batch absence is a clean
-        // exists() check (a taken id = replay = denied).
         return newPaise is int
           && newPaise >= 0
           && oldSeq is int
@@ -166,11 +174,12 @@ service cloud.firestore {
           && newSeq == oldSeq + 1
           && delta > 0
           && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['balance', 'balancePaise', 'txnSeq'])
+               .hasOnly(['balance', 'balancePaise', 'txnSeq', 'withdrawalTxnId'])
           && tid != null
           && exists(/databases/$(database)/documents/users/$(email)/transactions/$(tid)) == false
           && tAfter != null
-          && tAfter.data.type == 'withdrawal';
+          && tAfter.data.type == 'withdrawal'
+          && tAfter.data.seq == newSeq;
       }
 
       // Admin job credit: the user write carries creditJobId; the job and
@@ -291,26 +300,29 @@ service cloud.firestore {
       allow list: if isSelf(email) || isAdmin();
 
       // Withdrawal txn: the FINAL user state after this batch must equal
-      // the pre-balance minus exactly this amount (>= 0), and the ID must
-      // be canonical for the post-batch seq. This ties the txn to the
-      // companion balance write without request.writes.
+      // the pre-balance minus exactly this amount (>= 0), the post-batch
+      // user doc must reference THIS txn id (withdrawalTxnId == txnId),
+      // and t.seq must equal the post-batch user seq — the bidirectional
+      // companion lock (no int->string in this engine, so the ID is
+      // verified from both sides instead of reconstructed).
       function withdrawalTxnOk() {
         let t = request.resource.data;
         let u = get(/databases/$(database)/documents/users/$(email));
         let uAfter = getAfter(/databases/$(database)/documents/users/$(email));
         let finalPaise = uAfter.data.balancePaise;
-        let canon = 'w_' + email + '_' + toString(uAfter.data.txnSeq);
         return t.type == 'withdrawal'
           && t.studentId == email
           && t.amountPaise is int
           && t.amountPaise > 0
           && t.amount != null
           && t.amount > 0
+          && t.seq is int
           && exists(/databases/$(database)/documents/users/$(email))
           && finalPaise is int
           && finalPaise >= 0
           && finalPaise == paiseOf(u.data) - t.amountPaise
-          && txnId == canon;
+          && uAfter.data.withdrawalTxnId == txnId
+          && t.seq == uAfter.data.txnSeq;
       }
 
       // Earning txn: canonical ID; the job must be NEW in this batch
