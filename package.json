@@ -1,0 +1,17 @@
+{
+  "name": "jkss-fund",
+  "version": "3.0.0",
+  "description": "JKSS Fund - Hostel Fund Management System (web + API)",
+  "main": "backend/server.js",
+  "scripts": {
+    "install:all": "npm --prefix backend install && npm --prefix frontend install",
+    "build": "npm --prefix frontend run build",
+    "start": "node backend/server.js",
+    "dev:backend": "node backend/server.js",
+    "dev:frontend": "npm --prefix frontend run dev"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "private": true
+}
